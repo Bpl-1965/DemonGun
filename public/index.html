@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0507" />
+  <title>惡魔輪盤 · DEVIL ROULETTE</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+  <!-- ============================ VFX 圖層 ============================ -->
+  <div id="vfx" class="vfx-layer" aria-hidden="true">
+    <div class="vfx-flash" id="vfxFlash"></div>
+    <div class="vfx-blood" id="vfxBlood"></div>
+    <div class="vfx-particles" id="vfxParticles"></div>
+    <div class="vfx-scanlines"></div>
+  </div>
+
+  <!-- 扣血數字：魔王被實彈打中時從畫面中央彈出的紅色數字 -->
+  <div class="damage-float" id="damageFloat"></div>
+
+  <!-- ===================== 任務 1：本回合裝填（置中 + 3 秒） ===================== -->
+  <div class="ammo-reveal" id="ammoReveal" hidden role="dialog" aria-modal="true" aria-labelledby="revealTitle">
+    <div class="ammo-reveal__card">
+      <p class="ammo-reveal__eyebrow">ROUND <b id="revealRound">1</b></p>
+      <h2 class="ammo-reveal__title" id="revealTitle">本回合裝填</h2>
+      <div class="ammo-reveal__counts">
+        <div class="ammo-reveal__count ammo-reveal__count--live">
+          <span class="ammo-reveal__dot"></span>
+          <b id="revealLive">0</b>
+          <span>發實彈</span>
+        </div>
+        <span class="ammo-reveal__slash">/</span>
+        <div class="ammo-reveal__count ammo-reveal__count--blank">
+          <span class="ammo-reveal__dot"></span>
+          <b id="revealBlank">0</b>
+          <span>發空包彈</span>
+        </div>
+      </div>
+      <div class="ammo-reveal__bar"><i id="revealBar"></i></div>
+      <p class="ammo-reveal__countdown">遊戲將在 <b id="revealCountdown">3</b> 秒後開始…</p>
+    </div>
+  </div>
+
+  <div class="app" id="app">
+    <!-- ============================ 頂欄 ============================ -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand__mark">♠</span>
+        <span class="brand__text">DEVIL<em>ROULETTE</em></span>
+      </div>
+      <div class="topbar__right">
+        <span class="status-dot" id="connDot" data-state="on"></span>
+        <span class="status-text" id="connText">已連線</span>
+        <button class="btn btn--ghost btn--sm" id="btnMute" title="音效開關">🔊</button>
+        <button class="btn btn--ghost btn--sm" id="btnHowTo">規則</button>
+      </div>
+    </header>
+
+    <!-- ============================ 大廳 ============================ -->
+    <section class="screen screen--lobby" id="screenLobby">
+      <div class="lobby-hero">
+        <h1 class="hero-title">惡魔<em>輪盤</em></h1>
+        <p class="hero-sub">每一輪都重新裝彈，没有人知道下一槍是不是實彈。</p>
+      </div>
+
+      <div class="lobby-grid">
+        <div class="panel panel--lobby">
+          <h2 class="panel__title">小檔案</h2>
+          <label class="field">
+            <span class="field__label">稱號</span>
+            <input class="input" id="inputName" maxlength="14" placeholder="輸入你的名字" autocomplete="off" />
+          </label>
+
+          <h2 class="panel__title">建立房間</h2>
+          <div class="mode-picker" role="tablist">
+            <button class="mode" data-mode="single" role="tab" aria-selected="true">
+              <strong>單人</strong><span>挑戰 DeepSeek 娘</span>
+            </button>
+            <button class="mode" data-mode="multi" role="tab" aria-selected="false">
+              <strong>多人</strong><span>同房間互相殘殺</span>
+            </button>
+          </div>
+          <label class="field" id="fieldMaxPlayers" hidden>
+            <span class="field__label">人數上限</span>
+            <select class="input" id="selectMaxPlayers">
+              <option value="2">2 人</option>
+              <option value="3">3 人</option>
+              <option value="4">4 人</option>
+            </select>
+          </label>
+          <button class="btn btn--primary btn--wide" id="btnCreate">建立房間</button>
+
+          <div class="divider"><span>或</span></div>
+
+          <label class="field">
+            <span class="field__label">房間代碼</span>
+            <input class="input input--code" id="inputCode" maxlength="8" placeholder="ABCD" autocomplete="off" />
+          </label>
+          <button class="btn btn--danger btn--wide" id="btnJoin">加入房間</button>
+
+          <p class="hint" id="lobbyHint">提示：與朋友在同一個區網，開啟同一個網址並輸入相同房碼。</p>
+        </div>
+
+        <div class="panel panel--lobby panel--rules">
+          <h2 class="panel__title">裝彈規則（由伺服器設定即時讀取）</h2>
+          <dl class="rule-list">
+            <div><dt>初始生命</dt><dd data-bind="hpStart">–</dd></div>
+            <div><dt>生命上限</dt><dd data-bind="hpMax">–</dd></div>
+            <div><dt>每輪子彈</dt><dd data-bind="shellRange">–</dd></div>
+            <div><dt>實彈比例</dt><dd data-bind="liveWeight">–</dd></div>
+            <div><dt>換輪回血</dt><dd data-bind="healOnReload">–</dd></div>
+            <div><dt>每回合限時</dt><dd data-bind="turnTimeout">–</dd></div>
+          </dl>
+          <h2 class="panel__title">道具圖鑑</h2>
+          <ul class="codex" id="codex"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 遊戲（2D 三欄 + 底部按鈕） ============================ -->
+    <section class="screen screen--game" id="screenGame" hidden>
+
+      <!-- 頂部狀態：房碼 / 輪次 / 剩餘彈藥 / 離開 -->
+      <div class="hud">
+        <div class="hud__left">
+          <span class="chip chip--room">房碼 <b id="hudCode">----</b></span>
+          <span class="chip">第 <b id="hudRound">1</b> 輪</span>
+        </div>
+        <div class="hud__center">
+          <div class="shell-counter" id="shellCounter" title="剩餘子彈數量（順序保密）">
+            <div class="shell-counter__item">
+              <span class="dot dot--live"></span>
+              <span>實彈 <b id="countLive">0</b></span>
+            </div>
+            <div class="shell-counter__item">
+              <span class="dot dot--blank"></span>
+              <span>空包 <b id="countBlank">0</b></span>
+            </div>
+            <div class="shell-counter__item shell-counter__total">共 <b id="countTotal">0</b></div>
+          </div>
+          <div class="turn-timer" id="turnTimer"><i></i></div>
+        </div>
+        <div class="hud__right">
+          <button class="btn btn--ghost btn--sm" id="btnQuit">離開</button>
+        </div>
+      </div>
+
+      <!-- 現在是誰的回合（大字） -->
+      <div class="turn-banner" id="turnBanner" role="status" aria-live="polite">等待開始</div>
+
+      <div class="board">
+        <!-- 左欄：生命值 -->
+        <aside class="board__col board__col--hp" id="hpPanel">
+          <p class="board__title">生命值</p>
+          <div class="hp-name" id="hpName">你</div>
+          <div class="hearts hearts--big" id="hpHearts"></div>
+          <div class="hp-meta" id="hpMeta">HP 0/0</div>
+          <div class="me-mods" id="meMods"></div>
+
+          <div class="intel" id="intel" hidden>
+            <span class="intel__label">已知情報</span>
+            <div class="intel__shells" id="intelShells"></div>
+          </div>
+        </aside>
+
+        <!-- 中欄：對手（DeepSeek 娘） -->
+        <main class="board__col board__col--demon">
+          <div class="demon-stage" id="demonStage" hidden>
+            <div class="demon" id="demon">
+              <div class="demon__portrait" id="demonPortrait" title="DeepSeek 娘（點兩下＝對她開槍）">
+                <img class="demon__img" id="demonImg" src="/assets/deepseek_girl.jpg" alt="DeepSeek 娘" draggable="false" />
+                <span class="demon__fallback" aria-hidden="true">👁️</span>
+                <span class="demon__hurt" aria-hidden="true"></span>
+              </div>
+
+              <div class="demon__plate" id="demonPlate">
+                <span class="demon__name" id="demonName">DeepSeek 娘</span>
+                <div class="hearts demon__hearts" id="demonHearts"></div>
+                <span class="demon__items" id="demonItems">🎒 0</span>
+              </div>
+
+              <div class="demon__bubble" id="demonBubble" role="status" aria-live="polite" hidden>
+                <span class="demon__bubble-text" id="demonBubbleText"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="seats" id="seats"></div>
+
+          <div class="gun" id="gun">
+            <div class="gun__cylinder" id="gunCylinder">
+              <i class="cyl cyl--0"></i><i class="cyl cyl--1"></i><i class="cyl cyl--2"></i>
+              <i class="cyl cyl--3"></i><i class="cyl cyl--4"></i><i class="cyl cyl--5"></i>
+            </div>
+            <div class="gun__label" id="gunLabel">等待裝彈</div>
+          </div>
+
+          <div class="action-toast" id="actionToast"></div>
+        </main>
+
+        <!-- 右欄：道具欄 -->
+        <aside class="board__col board__col--items">
+          <p class="board__title">道具欄</p>
+          <div class="inventory" id="inventory">
+            <div class="inventory__empty">道具欄空空如也（換輪時會自動補充）</div>
+          </div>
+          <aside class="log" id="log" aria-live="polite"></aside>
+        </aside>
+      </div>
+
+      <!-- 底部：兩個大按鈕 -->
+      <footer class="actions-bar">
+        <div class="target-picker" id="targetPicker" hidden></div>
+        <div class="actions-row" id="actionsRow">
+          <button class="btn btn--self" id="btnSelf" type="button">
+            <span class="btn__icon">🙎</span>
+            <span class="btn__text">對自己開槍</span>
+            <span class="btn__hint">空包彈可保留回合</span>
+          </button>
+          <button class="btn btn--enemy" id="btnEnemy" type="button">
+            <span class="btn__icon">💀</span>
+            <span class="btn__text">對敵人開槍</span>
+            <span class="btn__hint" id="enemyHint">Fire Enemy</span>
+          </button>
+        </div>
+      </footer>
+    </section>
+
+    <!-- ============================ 結算 ============================ -->
+    <div class="modal" id="modalResult" hidden>
+      <div class="modal__card">
+        <div class="result-title" id="resultTitle">你贏了</div>
+        <p class="result-sub" id="resultSub"></p>
+        <ol class="reveal-list" id="revealList"></ol>
+        <div class="modal__actions">
+          <button class="btn btn--primary" id="btnRematch">再來一局</button>
+          <button class="btn btn--ghost" id="btnBackLobby">回到大廳</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================ 規則 ============================ -->
+    <div class="modal" id="modalHowTo" hidden>
+      <div class="modal__card modal__card--wide">
+        <h2 class="modal__title">怎麼玩</h2>
+        <ul class="howto">
+          <li>每一輪開始時，伺服器會依設定<b>隨機裝彈並洗牌</b>，畫面中央會先告訴你「有幾發實彈、幾發空包彈」，3 秒後才開始。</li>
+          <li>輪到你時可以：<b>對自己開槍</b>（打出空包彈就保留回合，可以繼續開槍或用道具；打出實彈扣自己的血並交棒）或<b>對敵人開槍</b>（不管結果，回合立刻交給下一位）。</li>
+          <li>所有人共用同一把槍與同一串子彈；子彈打完會自動重新裝彈。</li>
+          <li>每次裝彈會自動發給每人 <b>2 個</b>隨機道具，第 <b>3 輪</b>以後變 <b>3 個</b>，道具欄在右側。</li>
+          <li>部分道具（沙漏、鐵唱片、腎上腺素、連發酒）<b>不</b>消耗回合；其他道具用完就交棒。</li>
+          <li>在畫面中央直接點 DeepSeek 娘兩下，也能對她開槍。</li>
+          <li>最後活下來的人獲勝。</li>
+        </ul>
+        <div class="modal__actions">
+          <button class="btn btn--primary" id="btnCloseHowTo">知道了</button>
+        </div>
+      </div>
+    </div>
+
+    <footer class="footer">
+      <span>DEVIL ROULETTE</span> · 資料驅動引擎 · 2D 桌面 · <span id="versionTag">v1.0.0</span>
+    </footer>
+  </div>
+
+  <!-- Socket.io 執行檔由 server.js 提供（同一台伺服器、同一條 path） -->
+  <script src="/socket.io/socket.io.js" onerror="window.__socketScriptFailed = true"></script>
+  <script src="/client.js"></script>
+</body>
+</html>

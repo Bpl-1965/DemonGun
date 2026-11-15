@@ -1,0 +1,37 @@
+{
+  "name": "devil-roulette",
+  "version": "1.0.0",
+  "private": true,
+  "description": "惡魔輪盤 Devil Roulette —— 資料驅動 + 隨機裝彈的網頁版俄羅斯輪盤（單人 vs AI / 多人 Socket.io 連線）",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "smoke": "node scripts/smoke.js",
+    "dialogue": "node scripts/test-dialogue.js",
+    "sim2d": "node scripts/sim2d.js",
+    "hooks": "node scripts/check-dom.js",
+    "test": "node scripts/smoke.js && node scripts/test-dialogue.js && node scripts/sim2d.js && node scripts/check-dom.js",
+    "e2e": "node scripts/e2e.js"
+  },
+  "keywords": [
+    "roulette",
+    "buckshot",
+    "socket.io",
+    "data-driven",
+    "game"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "socket.io": "^4.8.4",
+    "three": "0.160.0"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}

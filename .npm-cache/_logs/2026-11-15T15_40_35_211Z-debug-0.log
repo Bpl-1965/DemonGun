@@ -1,0 +1,121 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.6.2
+2 info using node@v24.12.0
+3 silly config load:file:C:\Program Files\nodejs\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\ttbri\OneDrive\Desktop\DemonGun\.npmrc
+5 silly config load:file:C:\Users\ttbri\.npmrc
+6 silly config load:file:C:\Users\ttbri\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm install three@0.160.0
+8 verbose argv "install" "three@0.160.0" "--save-exact" "--cache" ".\\.npm-cache"
+9 verbose logfile logs-max:10 dir:C:\Users\ttbri\OneDrive\Desktop\DemonGun\.npm-cache\_logs\2026-11-15T15_40_35_211Z-
+10 verbose logfile C:\Users\ttbri\OneDrive\Desktop\DemonGun\.npm-cache\_logs\2026-11-15T15_40_35_211Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+13 silly idealTree buildDeps
+14 silly fetch manifest three@0.160.0
+15 silly packumentCache full:https://registry.npmjs.org/three cache-miss
+16 http fetch GET 200 https://registry.npmjs.org/three 198ms (cache revalidated)
+17 silly packumentCache full:https://registry.npmjs.org/three set size:946179 disposed:false
+18 silly placeDep ROOT three@0.160.0 REPLACE for: devil-roulette@1.0.0 want: 0.160.0
+19 silly reify mark retired [
+19 silly reify   'C:\\Users\\ttbri\\OneDrive\\Desktop\\DemonGun\\node_modules\\three'
+19 silly reify ]
+20 silly reify moves {
+20 silly reify   'C:\\Users\\ttbri\\OneDrive\\Desktop\\DemonGun\\node_modules\\three': 'C:\\Users\\ttbri\\OneDrive\\Desktop\\DemonGun\\node_modules\\.three-bMLuwtKI'
+20 silly reify }
+21 silly audit bulk request {
+21 silly audit   '@socket.io/component-emitter': [ '3.1.2' ],
+21 silly audit   '@types/cors': [ '2.8.19' ],
+21 silly audit   '@types/node': [ '26.6.6' ],
+21 silly audit   '@types/ws': [ '8.18.2' ],
+21 silly audit   accepts: [ '2.0.0', '1.3.8' ],
+21 silly audit   'body-parser': [ '2.4.0' ],
+21 silly audit   bytes: [ '3.1.2' ],
+21 silly audit   'call-bind-apply-helpers': [ '1.0.2' ],
+21 silly audit   'call-bound': [ '1.0.4' ],
+21 silly audit   'content-disposition': [ '2.0.1' ],
+21 silly audit   'content-type': [ '2.1.0' ],
+21 silly audit   cookie: [ '0.7.2' ],
+21 silly audit   'cookie-signature': [ '1.2.2' ],
+21 silly audit   cors: [ '2.8.6' ],
+21 silly audit   debug: [ '4.4.3' ],
+21 silly audit   depd: [ '2.0.0' ],
+21 silly audit   'dunder-proto': [ '1.0.1' ],
+21 silly audit   'ee-first': [ '1.1.1' ],
+21 silly audit   encodeurl: [ '2.0.3' ],
+21 silly audit   'engine.io': [ '6.6.11' ],
+21 silly audit   'engine.io-client': [ '6.6.8' ],
+21 silly audit   'engine.io-parser': [ '5.2.3' ],
+21 silly audit   'mime-db': [ '1.52.0', '1.54.0' ],
+21 silly audit   'mime-types': [ '2.1.35', '3.0.2' ],
+21 silly audit   negotiator: [ '0.6.3', '1.1.0' ],
+21 silly audit   'es-define-property': [ '1.0.1' ],
+21 silly audit   'es-errors': [ '1.3.0' ],
+21 silly audit   'es-object-atoms': [ '1.1.2' ],
+21 silly audit   'escape-html': [ '1.0.3' ],
+21 silly audit   etag: [ '1.8.1' ],
+21 silly audit   express: [ '5.3.0' ],
+21 silly audit   finalhandler: [ '2.1.1' ],
+21 silly audit   forwarded: [ '0.2.0' ],
+21 silly audit   fresh: [ '2.0.0' ],
+21 silly audit   'function-bind': [ '1.1.2' ],
+21 silly audit   'get-intrinsic': [ '1.3.0' ],
+21 silly audit   'get-proto': [ '1.0.1' ],
+21 silly audit   gopd: [ '1.2.0' ],
+21 silly audit   'has-symbols': [ '1.1.0' ],
+21 silly audit   hasown: [ '2.0.4' ],
+21 silly audit   'http-errors': [ '2.0.1' ],
+21 silly audit   'iconv-lite': [ '0.7.3' ],
+21 silly audit   inherits: [ '2.0.4' ],
+21 silly audit   'ipaddr.js': [ '1.9.1' ],
+21 silly audit   'is-promise': [ '4.0.0' ],
+21 silly audit   'math-intrinsics': [ '1.1.0' ],
+21 silly audit   'media-typer': [ '1.1.1' ],
+21 silly audit   'merge-descriptors': [ '2.0.0' ],
+21 silly audit   ms: [ '2.1.3' ],
+21 silly audit   'object-assign': [ '4.1.1' ],
+21 silly audit   'object-inspect': [ '1.13.4' ],
+21 silly audit   'on-finished': [ '2.4.2' ],
+21 silly audit   once: [ '1.4.0' ],
+21 silly audit   parseurl: [ '1.3.3' ],
+21 silly audit   'path-to-regexp': [ '8.4.2' ],
+21 silly audit   'proxy-addr': [ '2.0.8' ],
+21 silly audit   qs: [ '6.17.1' ],
+21 silly audit   'range-parser': [ '1.3.0' ],
+21 silly audit   'raw-body': [ '3.0.2' ],
+21 silly audit   router: [ '2.2.0' ],
+21 silly audit   'safer-buffer': [ '2.1.2' ],
+21 silly audit   send: [ '1.2.1' ],
+21 silly audit   'serve-static': [ '2.2.1' ],
+21 silly audit   setprototypeof: [ '1.2.0' ],
+21 silly audit   'side-channel': [ '1.1.1' ],
+21 silly audit   'side-channel-list': [ '1.0.1' ],
+21 silly audit   'side-channel-map': [ '1.0.1' ],
+21 silly audit   'side-channel-weakmap': [ '1.0.2' ],
+21 silly audit   'socket.io': [ '4.8.4' ],
+21 silly audit   'socket.io-adapter': [ '2.5.8' ],
+21 silly audit   'socket.io-client': [ '4.8.4' ],
+21 silly audit   'socket.io-parser': [ '4.2.7' ],
+21 silly audit   statuses: [ '2.0.2' ],
+21 silly audit   toidentifier: [ '1.0.1' ],
+21 silly audit   'type-is': [ '2.1.0' ],
+21 silly audit   'undici-types': [ '8.9.0' ],
+21 silly audit   unpipe: [ '1.0.0' ],
+21 silly audit   vary: [ '1.1.2' ],
+21 silly audit   wrappy: [ '1.0.2' ],
+21 silly audit   ws: [ '8.21.3' ],
+21 silly audit   'xmlhttprequest-ssl': [ '2.1.2' ],
+21 silly audit   three: [ '0.160.0' ]
+21 silly audit }
+22 http cache three@https://registry.npmjs.org/three/-/three-0.160.0.tgz 0ms (cache hit)
+23 silly tarball no local data for three@https://registry.npmjs.org/three/-/three-0.160.0.tgz. Extracting by manifest.
+24 http fetch POST 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk 221ms
+25 silly audit report {}
+26 http fetch GET 200 https://registry.npmjs.org/three/-/three-0.160.0.tgz 7886ms (cache miss)
+27 silly CHANGE node_modules/three
+28 verbose cwd C:\Users\ttbri\OneDrive\Desktop\DemonGun
+29 verbose os Windows_NT 10.0.26200
+30 verbose node v24.12.0
+31 verbose npm  v11.6.2
+32 verbose exit 0
+33 info ok
