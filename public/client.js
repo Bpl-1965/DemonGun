@@ -1,1470 +1,1077 @@
-/* ==========================================================================
-   惡魔輪盤 DEVIL ROULETTE — 前端（純 2D，不依賴 Three.js）
-   --------------------------------------------------------------------------
-   這一支只做三件事：
-     1. 把 server 送來的 room:update / game:action 畫成 2D 介面
-     2. 把玩家的點擊（對自己開槍 / 對敵人開槍 / 用道具）送成 socket 指令
-     3. 播 VFX（震動、血濺、霓虹、扣血數字）與 DeepSeek 娘台詞
-   所有遊戲規則都在 server（config/gameConfig.js + logic/gameEngine.js），
-   前端不判斷勝負、不判斷能否開槍，只照狀態顯示（單一真相來源）。
-   ========================================================================== */
-(function () {
-  'use strict';
+/* =========================================================
+   惡魔輪盤 · 前端（極簡純 2D，上下對戰）
+   只做三件事：把狀態畫出來、把意圖送出去、把動作演出來。
+   所有規則與傷害都由伺服器決定，這裡不算任何數值。
+   ========================================================= */
 
-  /* ========================================================================== */
-  /*  0. 小工具                                                                 */
-  /* ========================================================================== */
-  const $ = (sel, root) => (root || document).querySelector(sel);
-  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
-  const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
-  const rand = (min, max) => min + Math.random() * (max - min);
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------- 小工具
+  const $ = (id) => document.getElementById(id);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
-  }
+  const ERROR_TEXT = {
+    NOT_IN_ROOM: "你不在房間裡。",
+    NOT_HOST: "只有房主可以開局。",
+    ALREADY_STARTED: "遊戲已經開始了。",
+    NOT_ENOUGH_PLAYERS: "人數不足，無法開局。",
+    NOT_YOUR_TURN: "還沒輪到你。",
+    AMMO_REVEAL: "還在公布裝填結果，稍等一下。",
+    GAME_NOT_PLAYING: "遊戲還沒開始或已經結束。",
+    PLAYER_DEAD: "你已經出局了。",
+    TOO_FAST: "手速太快了，慢一點。",
+    UNKNOWN_ITEM: "沒有這個道具。",
+    NO_ITEM: "道具已經用掉了。",
+    TOO_MANY_ITEMS: "這回合用太多道具了。",
+    HP_FULL: "生命值已經滿了，留著之後再用吧。",
+    ROOM_NOT_FOUND: "找不到這個房碼。",
+    ROOM_FULL: "房間滿了。",
+    NAME_TAKEN: "這個名字有人在用了。",
+    NOT_A_PLAYER: "旁觀者不能行動。",
+  };
 
-  function setText(node, value) {
-    if (node && node.textContent !== String(value)) node.textContent = String(value);
-  }
-
-  function safeStorageGet(key, fallback = '') {
-    try {
-      return window.localStorage.getItem(key) || fallback;
-    } catch (err) {
-      return fallback;
-    }
-  }
-
-  function safeStorageSet(key, value) {
-    try {
-      window.localStorage.setItem(key, value);
-    } catch (err) {
-      /* 無痕模式等情況忽略 */
-    }
-  }
-
-  /* ========================================================================== */
-  /*  1. 全域狀態                                                               */
-  /* ========================================================================== */
-  const RANDOM_NAME = '玩家' + Math.floor(1000 + Math.random() * 9000);
-
+  // ---------------------------------------------------------------- 狀態
   const state = {
     socket: null,
-    connected: false,
-    room: null,       // 最近一次 room:update 的原始 payload
+    config: null,
+    code: null,
+    hostId: null,
     youId: null,
-    game: null,       // { public, private }
-    config: null,     // /socket hello 或 /api/config 送來的公開設定
+    myName: null,
     seats: [],
-    mode: 'single',
-    turnDeadline: 0,
+    lobbyMax: 4, // 房主選的人數上限（由 room:create / lobby:update 帶回）
+    game: { public: null, private: null },
     selectedTarget: null,
     busy: false,
-    soundOn: true,
-    revealTimers: [],   // 任務1：本回合裝填提示的計時器
-    revealShowing: false
+    busyAt: 0,
+    revealUntil: 0, // 伺服器時間軸（ms）
+    revealMs: 0,
+    serverOffset: 0, // 伺服器時間 - 本機時間
+    turnDeadline: 0, // 伺服器時間軸（ms）；0 = 沒有計時
+    serverTurnTimeout: 0, // 伺服器設的回合秒數（拿來算初始數字）
+    turnTimerId: null,
+    revealTimer: null,
+    queue: Promise.resolve(),
   };
 
-  /* ========================================================================== */
-  /*  2. DOM 快取                                                               */
-  /* ========================================================================== */
-  const dom = {
-    app: $('#app'),
-    // 圖層
-    vfxFlash: $('#vfxFlash'),
-    vfxBlood: $('#vfxBlood'),
-    vfxParticles: $('#vfxParticles'),
-    damageFloat: $('#damageFloat'),
-    // 任務1：本回合裝填
-    ammoReveal: $('#ammoReveal'),
-    revealRound: $('#revealRound'),
-    revealLive: $('#revealLive'),
-    revealBlank: $('#revealBlank'),
-    revealBar: $('#revealBar'),
-    revealCountdown: $('#revealCountdown'),
-    // 頂欄
-    connDot: $('#connDot'),
-    connText: $('#connText'),
-    btnMute: $('#btnMute'),
-    btnHowTo: $('#btnHowTo'),
-    versionTag: $('#versionTag'),
-    // 大廳
-    screenLobby: $('#screenLobby'),
-    screenGame: $('#screenGame'),
-    inputName: $('#inputName'),
-    inputCode: $('#inputCode'),
-    btnCreate: $('#btnCreate'),
-    btnJoin: $('#btnJoin'),
-    fieldMaxPlayers: $('#fieldMaxPlayers'),
-    selectMaxPlayers: $('#selectMaxPlayers'),
-    lobbyHint: $('#lobbyHint'),
-    codex: $('#codex'),
-    // HUD
-    hudCode: $('#hudCode'),
-    hudRound: $('#hudRound'),
-    countLive: $('#countLive'),
-    countBlank: $('#countBlank'),
-    countTotal: $('#countTotal'),
-    shellCounter: $('#shellCounter'),
-    turnTimer: $('#turnTimer'),
-    turnBanner: $('#turnBanner'),
-    btnQuit: $('#btnQuit'),
-    // 左欄：生命值
-    hpPanel: $('#hpPanel'),
-    hpName: $('#hpName'),
-    hpHearts: $('#hpHearts'),
-    hpMeta: $('#hpMeta'),
-    meMods: $('#meMods'),
-    intel: $('#intel'),
-    intelShells: $('#intelShells'),
-    // 中欄：魔王
-    demonStage: $('#demonStage'),
-    demon: $('#demon'),
-    demonPortrait: $('#demonPortrait'),
-    demonImg: $('#demonImg'),
-    demonName: $('#demonName'),
-    demonHearts: $('#demonHearts'),
-    demonItems: $('#demonItems'),
-    demonBubble: $('#demonBubble'),
-    demonBubbleText: $('#demonBubbleText'),
-    // 中欄：其他玩家 / 槍 / toast
-    seats: $('#seats'),
-    gun: $('#gun'),
-    gunCylinder: $('#gunCylinder'),
-    gunLabel: $('#gunLabel'),
-    toast: $('#actionToast'),
-    // 右欄：道具 + 日誌
-    inventory: $('#inventory'),
-    log: $('#log'),
-    // 底部按鈕
-    actionsRow: $('#actionsRow'),
-    btnSelf: $('#btnSelf'),
-    btnEnemy: $('#btnEnemy'),
-    enemyHint: $('#enemyHint'),
-    targetPicker: $('#targetPicker'),
-    // 結算
-    modalResult: $('#modalResult'),
-    resultTitle: $('#resultTitle'),
-    resultSub: $('#resultSub'),
-    revealList: $('#revealList'),
-    btnRematch: $('#btnRematch'),
-    btnBackLobby: $('#btnBackLobby'),
-    modalHowTo: $('#modalHowTo'),
-    btnCloseHowTo: $('#btnCloseHowTo')
+  const pub = () => state.game.public || null;
+  const priv = () => state.game.private || null;
+
+  // 重新整理（F5）之後要能認回原本的座位，所以把「房碼 + 名字」記在本機
+  const SESSION_KEY = "devil.session";
+  const loadSession = () => {
+    try {
+      const raw = window.localStorage.getItem(SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      return null;
+    }
+  };
+  const saveSession = (patch) => {
+    try {
+      const next = Object.assign(loadSession() || {}, patch);
+      window.localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+    } catch (err) {
+      /* 隱私模式下 localStorage 會壞，忽略即可 */
+    }
+  };
+  const clearSession = () => {
+    try {
+      window.localStorage.removeItem(SESSION_KEY);
+    } catch (err) {
+      /* 同上 */
+    }
   };
 
-  // FX 參數由 /api/config 覆寫（config.FX）
-  const fx = {
-    SHAKE_MS: 420,
-    SHAKE_INTENSITY: 12,
-    BLOOD_PARTICLES: 22,
-    BLOOD_COLORS: ['#b3000f', '#e01b24', '#5c0006', '#ff5d5d'],
-    SCREEN_FLASH_ALPHA: 0.45
+  const myPlayer = () => {
+    const p = pub();
+    if (!p) return null;
+    return p.players.find((x) => x.id === state.youId) || null;
   };
-
-  // DeepSeek 娘（前台只露這幾個欄位，機率與冷卻留給伺服器）
-  const demonCfg = {
-    ENABLED: true,
-    SPEAKER: 'DeepSeek 娘',
-    PORTRAIT: '/assets/deepseek_girl.jpg',
-    PORTRAIT_SIZE: 300,
-    BUBBLE_MS: 4600,
-    TYPE_SPEED_MS: 24
+  const others = () => {
+    const p = pub();
+    if (!p) return [];
+    return p.players.filter((x) => x.id !== state.youId);
   };
+  const aliveOthers = () => others().filter((x) => !x.dead);
+  const isMyTurn = () => {
+    const p = pub();
+    return Boolean(p && p.phase === "playing" && p.activeId === state.youId);
+  };
+  const revealActive = () => state.revealUntil > Date.now() + state.serverOffset;
 
-  /* ========================================================================== */
-  /*  3. 音效（WebAudio 合成，不載入外部檔案）                                  */
-  /* ========================================================================== */
-  const audio = (() => {
-    let ctx = null;
-    let master = null;
-
-    function ensure() {
-      if (!state.soundOn) return null;
-      try {
-        if (!ctx) {
-          const Ctor = window.AudioContext || window.webkitAudioContext;
-          if (!Ctor) return null;
-          ctx = new Ctor();
-          master = ctx.createGain();
-          master.gain.value = 0.24;
-          master.connect(ctx.destination);
-        }
-        if (ctx.state === 'suspended') ctx.resume();
-        return ctx;
-      } catch (err) {
-        return null;
-      }
-    }
-
-    function tone(freq, dur, type = 'sine', gain = 0.3, slideTo = null) {
-      const ac = ensure();
-      if (!ac) return;
-      const osc = ac.createOscillator();
-      const g = ac.createGain();
-      osc.type = type;
-      osc.frequency.setValueAtTime(freq, ac.currentTime);
-      if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, ac.currentTime + dur);
-      g.gain.setValueAtTime(gain, ac.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
-      osc.connect(g).connect(master);
-      osc.start();
-      osc.stop(ac.currentTime + dur + 0.02);
-    }
-
-    function noise(dur, gain = 0.4, filterFreq = 1200, type = 'lowpass') {
-      const ac = ensure();
-      if (!ac) return;
-      const frames = Math.max(1, Math.floor(ac.sampleRate * dur));
-      const buffer = ac.createBuffer(1, frames, ac.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < frames; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / frames);
-      const src = ac.createBufferSource();
-      src.buffer = buffer;
-      const filter = ac.createBiquadFilter();
-      filter.type = type;
-      filter.frequency.value = filterFreq;
-      const g = ac.createGain();
-      g.gain.setValueAtTime(gain, ac.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
-      src.connect(filter).connect(g).connect(master);
-      src.start();
-    }
-
-    return {
-      unlock() {
-        ensure();
-      },
-      click() {
-        tone(520, 0.06, 'triangle', 0.18);
-      },
-      gunshot() {
-        noise(0.42, 0.85, 900);
-        tone(120, 0.34, 'sawtooth', 0.5, 42);
-        setTimeout(() => noise(0.24, 0.32, 2600, 'highpass'), 26);
-      },
-      empty() {
-        noise(0.09, 0.5, 2200, 'highpass');
-        tone(240, 0.07, 'square', 0.09, 160);
-      },
-      hurt() {
-        tone(196, 0.32, 'sawtooth', 0.26, 78);
-        noise(0.22, 0.22, 640);
-      },
-      item() {
-        tone(660, 0.1, 'sine', 0.16);
-        setTimeout(() => tone(940, 0.12, 'sine', 0.13), 78);
-      },
-      reveal() {
-        tone(300, 0.24, 'sine', 0.16, 620);
-      },
-      win() {
-        [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => tone(f, 0.3, 'triangle', 0.2), i * 130));
-      },
-      lose() {
-        [392, 330, 262, 196].forEach((f, i) => setTimeout(() => tone(f, 0.42, 'sawtooth', 0.18), i * 150));
-      }
-    };
-  })();
-
-  /* ========================================================================== */
-  /*  4. VFX                                                                   */
-  /* ========================================================================== */
-  function restartAnimation(node, classNames) {
-    if (!node) return;
-    [].concat(classNames).forEach((name) => node.classList.remove(name));
-    void node.offsetWidth; // 強制 reflow，讓動畫重播
-    [].concat(classNames).forEach((name) => node.classList.add(name));
+  // ---------------------------------------------------------------- 畫面切換
+  function setMessage(text, kind) {
+    const node = $("lobbyMsg");
+    node.textContent = text || "";
+    node.className = "lobby__msg" + (kind ? " is-" + kind : "");
   }
 
-  function vfxScreenShake({ hard = false } = {}) {
-    if (!dom.app) return;
-    dom.app.style.setProperty('--amp', `${(hard ? 1.6 : 1) * fx.SHAKE_INTENSITY}px`);
-    dom.app.style.setProperty('--shake-ms', `${fx.SHAKE_MS}ms`);
-    restartAnimation(dom.app, hard ? 'is-hit' : 'is-shaking');
-    setTimeout(() => dom.app.classList.remove('is-shaking', 'is-hit'), fx.SHAKE_MS + 60);
-  }
-
-  function vfxFlash(kind = 'fire') {
-    if (!dom.vfxFlash) return;
-    dom.vfxFlash.style.setProperty('--flash-alpha', String(fx.SCREEN_FLASH_ALPHA));
-    restartAnimation(dom.vfxFlash, kind === 'danger' ? ['is-danger'] : ['is-fired']);
-    setTimeout(() => dom.vfxFlash.classList.remove('is-fired', 'is-danger'), 520);
-  }
-
-  function vfxBloodScreen() {
-    if (!dom.vfxBlood) return;
-    restartAnimation(dom.vfxBlood, 'is-active');
-    setTimeout(() => dom.vfxBlood.classList.remove('is-active'), 1400);
-  }
-
-  function vfxParticles(x, y, kind = 'blood', count = fx.BLOOD_PARTICLES) {
-    if (!dom.vfxParticles) return;
-    for (let i = 0; i < count; i += 1) {
-      const p = el('i', `particle particle--${kind}`);
-      const angle = rand(0, Math.PI * 2);
-      const dist = rand(50, 220);
-      const size = rand(4, 11);
-      p.style.left = `${x}px`;
-      p.style.top = `${y}px`;
-      p.style.width = `${size}px`;
-      p.style.height = `${size}px`;
-      p.style.setProperty('--dx', `${Math.cos(angle) * dist}px`);
-      p.style.setProperty('--dy', `${Math.sin(angle) * dist + rand(-40, 90)}px`);
-      if (kind === 'blood') {
-        p.style.background = fx.BLOOD_COLORS[i % fx.BLOOD_COLORS.length];
-      }
-      p.style.setProperty('--dur', `${kind === 'blood' ? rand(650, 1250) : rand(380, 720)}ms`);
-      dom.vfxParticles.appendChild(p);
-      setTimeout(() => p.remove(), 1400);
-    }
-  }
-
-  function centerOf(node) {
-    if (!node) return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    const r = node.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  }
-
-  function showToast(text, kind = '') {
-    if (!dom.toast || !text) return;
-    dom.toast.textContent = text;
-    dom.toast.className = `action-toast${kind ? ` is-${kind}` : ''}`;
-    restartAnimation(dom.toast, 'is-visible');
-    clearTimeout(showToast._timer);
-    showToast._timer = setTimeout(() => dom.toast.classList.remove('is-visible'), 1900);
-  }
-
-  function rotateCylinder(step = 1) {
-    if (!dom.gunCylinder) return;
-    dom.gunCylinder.style.setProperty('--step', String((Number(dom.gunCylinder.dataset.step || 0) + step) % 6));
-    dom.gunCylinder.dataset.step = String((Number(dom.gunCylinder.dataset.step || 0) + step) % 6);
-    restartAnimation(dom.gun, 'is-spinning');
-    setTimeout(() => dom.gun && dom.gun.classList.remove('is-spinning'), 700);
-  }
-
-  /* ========================================================================== */
-  /*  4-1. 任務1：本回合裝填提示（中央彈出 → 3 秒 → 自動隱藏）                    */
-  /* ========================================================================== */
-  const revealState = { round: 0, live: 0, blank: 0, total: 0, ms: 0 };
-
-  function clearRevealTimers() {
-    state.revealTimers.forEach((id) => {
-      clearTimeout(id);
-      clearInterval(id);
-    });
-    state.revealTimers = [];
-  }
-
-  /**
-   * 顯示「本回合裝填：🔴 X 發實彈 / 🔵 Y 發空包彈」，並在 ms 毫秒後自動隱藏。
-   * 遊玩權限由 server 鎖著（engine 的 AMMO_REVEAL 鎖），所以這裡只負責演出。
-   */
-  function showAmmoReveal(info) {
-    const data = info || {};
-    const round = Number(data.round || 1);
-    const live = Math.max(0, Number(data.live || 0));
-    const blank = Math.max(0, Number(data.blank || 0));
-    const total = Number(data.total || live + blank);
-    const ms = Math.max(400, Number(data.ms || 3000));
-
-    const sameRound = state.revealShowing && revealState.round === round && revealState.live === live && revealState.blank === blank;
-    if (sameRound) return; // 同一次裝彈不重播
-
-    clearRevealTimers();
-    Object.assign(revealState, { round, live, blank, total, ms });
-    state.revealShowing = true;
-
-    setText(dom.revealRound, round);
-    setText(dom.revealLive, live);
-    setText(dom.revealBlank, blank);
-    setText(dom.revealCountdown, Math.ceil(ms / 1000));
-
-    if (dom.ammoReveal) {
-      dom.ammoReveal.hidden = false;
-      dom.ammoReveal.dataset.tone = live > blank ? 'danger' : live === blank ? 'even' : 'safe';
-      restartAnimation(dom.ammoReveal, 'is-visible');
-      restartAnimation($('.ammo-reveal__card', dom.ammoReveal), 'is-pop');
-    }
-    if (dom.revealBar) {
-      dom.revealBar.style.transition = 'none';
-      dom.revealBar.style.transform = 'scaleX(1)';
-      void dom.revealBar.offsetWidth;
-      dom.revealBar.style.transition = `transform ${ms}ms linear`;
-      dom.revealBar.style.transform = 'scaleX(0)';
-    }
-
-    audio.reveal();
-
-    // 倒數秒數
-    const countTimer = setInterval(() => {
-      const left = Math.max(0, Math.ceil((revealState.ms - (Date.now() - startedAt)) / 1000));
-      setText(dom.revealCountdown, left);
-    }, 200);
-    const startedAt = Date.now();
-
-    // 3 秒後自動隱藏
-    const hideTimer = setTimeout(() => {
-      hideAmmoReveal();
-    }, ms);
-
-    state.revealTimers.push(countTimer, hideTimer);
-
-    // 顯示期間不能開槍（server 也會拒絕，但 UI 先鎖住體感更好）
-    setActionsDisabled(true);
-    state.busy = true;
-  }
-
-  function hideAmmoReveal() {
-    clearRevealTimers();
-    if (!state.revealShowing) return;
-    state.revealShowing = false;
-    if (dom.ammoReveal) {
-      dom.ammoReveal.classList.add('is-closing');
-      const target = dom.ammoReveal;
-      setTimeout(() => {
-        if (state.revealShowing) return;
-        target.hidden = true;
-        target.classList.remove('is-visible', 'is-closing');
-      }, 260);
-    }
-    state.busy = false;
-    renderActionButtons();
-  }
-
-  /* ========================================================================== */
-  /*  4-2. DeepSeek 娘：立繪 / 被打演出 / 對話框                                  */
-  /* ========================================================================== */
-  const demonState = { id: null, hp: 0, maxHp: 0, dead: false, name: demonCfg.SPEAKER };
-  let bubbleTimer = 0;
-  let typeTimer = 0;
-
-  function demonOf(pub) {
-    if (!pub || !Array.isArray(pub.players)) return null;
-    return pub.players.find((p) => p.isAI && !p.dead) || pub.players.find((p) => p.isAI) || null;
-  }
-
-  function shouldShowDemon(pub) {
-    if (!pub || !Array.isArray(pub.players)) return false;
-    if (pub.players.some((p) => p.isAI)) return true;
-    return pub.players.length <= 1; // 單人且 AI 已死：保留舞台但不顯示名牌
-  }
-
-  function demonCenter() {
-    return centerOf(dom.demonPortrait);
-  }
-
-  function showDamageFloat(value, opts = {}) {
-    if (!dom.damageFloat) return;
-    const amount = Number(value || 0);
-    dom.damageFloat.textContent = `${opts.label ? `${opts.label} ` : ''}${opts.heal ? '+' : '-'}${amount}`;
-    dom.damageFloat.className = `damage-float${opts.heal ? ' is-heal' : ''}`;
-    restartAnimation(dom.damageFloat, 'is-active');
-    setTimeout(() => dom.damageFloat && dom.damageFloat.classList.remove('is-active'), 1300);
-  }
-
-  function demonHit(damage) {
-    const amount = Number(damage || 0);
-    if (dom.demon) restartAnimation(dom.demon, 'is-hit');
-    if (dom.demonPortrait) restartAnimation(dom.demonPortrait, 'is-hit');
-    setTimeout(() => {
-      if (dom.demon) dom.demon.classList.remove('is-hit');
-      if (dom.demonPortrait) dom.demonPortrait.classList.remove('is-hit');
-    }, 700);
-    showDamageFloat(amount, { label: '扣血' });
-    vfxScreenShake({ hard: true });
-    vfxFlash('danger');
-    const c = demonCenter();
-    vfxParticles(c.x, c.y, 'blood', Math.round(fx.BLOOD_PARTICLES * 1.4));
-    audio.hurt();
-  }
-
-  function typeDemonText(text) {
-    clearInterval(typeTimer);
-    const node = dom.demonBubbleText;
-    if (!node) return;
-    const speed = Number(demonCfg.TYPE_SPEED_MS || 0);
-    if (!speed) {
-      node.textContent = text;
-      return;
-    }
-    let i = 0;
-    node.textContent = '';
-    typeTimer = setInterval(() => {
-      i += 1;
-      node.textContent = text.slice(0, i);
-      if (i >= text.length) clearInterval(typeTimer);
-    }, speed);
-  }
-
-  function showDemonTaunt(action) {
-    if (!dom.demonBubble || !action || !action.text) return;
-    if (action.speakerName) demonState.name = action.speakerName;
-    setText(dom.demonName, demonState.name);
-    dom.demonBubble.hidden = false;
-    dom.demonBubble.dataset.event = action.eventType || '';
-    restartAnimation(dom.demonBubble, ['is-open']);
-    typeDemonText(String(action.text));
-    clearTimeout(bubbleTimer);
-    bubbleTimer = setTimeout(hideDemonTaunt, Math.max(1200, Number(demonCfg.BUBBLE_MS || 4600)));
-  }
-
-  function hideDemonTaunt() {
-    if (!dom.demonBubble || dom.demonBubble.hidden) return;
-    dom.demonBubble.classList.remove('is-open');
-    dom.demonBubble.classList.add('is-closing');
-    setTimeout(() => {
-      if (dom.demonBubble.classList.contains('is-open')) return;
-      dom.demonBubble.hidden = true;
-      dom.demonBubble.classList.remove('is-closing');
-    }, 240);
-  }
-
-  function renderHearts(container, hp, maxHp, extraClass = '') {
-    if (!container) return;
-    const max = clamp(Number(maxHp || 0), 0, 12);
-    const cur = clamp(Number(hp || 0), 0, max);
-    container.textContent = '';
-    for (let i = 0; i < max; i += 1) {
-      const heart = el('span', `heart${i < cur ? '' : ' is-lost'}${extraClass}`, i < cur ? '❤️' : '🖤');
-      container.appendChild(heart);
-    }
-  }
-
-  function renderDemon(pub) {
-    const demon = demonOf(pub);
-    const visible = Boolean(demon) && shouldShowDemon(pub);
-    Object.assign(demonState, {
-      id: demon ? demon.id : null,
-      hp: demon ? demon.hp : 0,
-      maxHp: demon ? demon.maxHp : 0,
-      dead: demon ? Boolean(demon.dead) : false
-    });
-
-    if (dom.demonStage) dom.demonStage.hidden = !visible;
-    if (!visible) {
-      hideDemonTaunt();
-      return;
-    }
-
-    setText(dom.demonName, demon.name || demonCfg.SPEAKER);
-    renderHearts(dom.demonHearts, demon.hp, demon.maxHp);
-    setText(dom.demonItems, `🎒 ${demon.itemCount || 0}`);
-    if (dom.demon) {
-      dom.demon.classList.toggle('is-active', Boolean(pub.activeId) && pub.activeId === demon.id);
-      dom.demon.classList.toggle('is-dead', Boolean(demon.dead));
-      dom.demon.classList.toggle('is-target', state.selectedTarget === demon.id);
-    }
-  }
-
-  /* ========================================================================== */
-  /*  5. Socket                                                                */
-  /* ========================================================================== */
-  function connect() {
-    if (!window.io) {
-      setConnection(false, '無法載入 Socket.io');
-      return;
-    }
-    const socket = window.io({ transports: ['websocket', 'polling'] });
-    state.socket = socket;
-
-    socket.on('connect', () => {
-      setConnection(true, '已連線');
-      socket.emit('hello', {
-        name: dom.inputName ? dom.inputName.value.trim() || RANDOM_NAME : RANDOM_NAME
-      });
-    });
-
-    socket.on('disconnect', () => setConnection(false, '已斷線，重新連線中…'));
-    socket.on('connect_error', () => setConnection(false, '連線失敗，重試中…'));
-
-    socket.on('server:hello', (payload) => {
-      if (payload && payload.config) applyConfig(payload.config);
-    });
-
-    socket.on('room:update', (payload) => {
-      const previous = state.game;
-      state.room = payload;
-      state.youId = payload.youId || state.youId;
-      state.seats = Array.isArray(payload.seats) ? payload.seats : [];
-      renderRoom(payload, previous);
-    });
-
-    socket.on('game:action', (payload) => {
-      if (!payload || !Array.isArray(payload.actions)) return;
-      playActions(payload.actions);
-    });
-
-    socket.on('game:reveal', (payload) => showResult(payload || {}));
-    socket.on('lobby:update', () => {/* 大廳目前靠 room:update 渲染 */});
-
-    socket.on('error:message', (payload) => {
-      if (payload && payload.message) flashHint(payload.message);
-    });
-  }
-
-  function setConnection(ok, text) {
-    state.connected = Boolean(ok);
-    if (dom.connDot) dom.connDot.dataset.state = ok ? 'on' : 'off';
-    setText(dom.connText, text);
-  }
-
-  function applyConfig(config) {
-    if (!config) return;
-    state.config = config;
-    if (config.FX) Object.assign(fx, config.FX);
-    if (config.DIALOGUE) applyDemonConfig(config.DIALOGUE);
-    renderLobbyConfig(config);
-    renderCodex(config);
-    if (config.VERSION && dom.versionTag) setText(dom.versionTag, `v${config.VERSION}`);
-  }
-
-  function applyDemonConfig(cfg) {
-    if (!cfg) return;
-    Object.assign(demonCfg, cfg);
-    if (dom.demonImg && demonCfg.PORTRAIT) dom.demonImg.src = String(demonCfg.PORTRAIT);
-    if (!dom.demonName.dataset.locked) setText(dom.demonName, demonCfg.SPEAKER || demonState.name);
-    const stage = dom.demonStage;
-    if (stage) stage.style.setProperty('--demon-size', `${Number(demonCfg.PORTRAIT_SIZE) || 300}px`);
-  }
-
-  /* ========================================================================== */
-  /*  6. 大廳                                                                  */
-  /* ========================================================================== */
-  function renderLobbyConfig(config) {
-    if (!config) return;
-    const HP = config.HP || {};
-    const AMMO = config.AMMO || {};
-    const RULES = config.RULES || {};
-    const set = (key, text) => $$(`[data-bind="${key}"]`).forEach((n) => setText(n, text));
-    set('hpStart', HP.START_HP ?? '–');
-    set('hpMax', HP.MAX_HP ?? '–');
-    set('shellRange', `${AMMO.MIN_SHELLS ?? '?'} ~ ${AMMO.MAX_SHELLS ?? '?'} 發`);
-    set('liveWeight', `約 ${Math.round((AMMO.LIVE_WEIGHT_BASE ?? 0.5) * 100)}%`);
-    set('healOnReload', AMMO.HEAL_ON_RELOAD ? '會回血' : '不回血');
-    set('turnTimeout', `${Math.round((RULES.TURN_TIMEOUT_MS || 60000) / 1000)} 秒`);
-  }
-
-  function renderCodex(config) {
-    if (!dom.codex || !config || !Array.isArray(config.ITEMS)) return;
-    dom.codex.textContent = '';
-    config.ITEMS.forEach((item) => {
-      const li = el('li', 'codex__row');
-      li.appendChild(el('span', 'codex__icon', item.icon || '🎲'));
-      const body = el('div', 'codex__body');
-      body.appendChild(el('strong', 'codex__name', item.name || item.id));
-      body.appendChild(el('span', 'codex__desc', item.desc || ''));
-      li.appendChild(body);
-      dom.codex.appendChild(li);
-    });
-  }
-
-  function setMode(mode) {
-    state.mode = mode === 'multi' ? 'multi' : 'single';
-    $$('.mode').forEach((btn) => {
-      const on = btn.dataset.mode === state.mode;
-      btn.classList.toggle('is-selected', on);
-      btn.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    if (dom.fieldMaxPlayers) dom.fieldMaxPlayers.hidden = state.mode !== 'multi';
-  }
-
-  function showLobby() {
-    clearRevealTimers();
-    state.revealShowing = false;
-    if (dom.ammoReveal) {
-      dom.ammoReveal.hidden = true;
-      dom.ammoReveal.classList.remove('is-visible', 'is-closing');
-    }
-    hideDemonTaunt();
-    if (dom.modalResult) dom.modalResult.hidden = true;
-    if (dom.screenLobby) dom.screenLobby.hidden = false;
-    if (dom.screenGame) dom.screenGame.hidden = true;
-    document.body.classList.remove('is-playing', 'is-tense');
-    state.busy = false;
+  function showLobby(keepSession) {
+    $("lobby").hidden = false;
+    $("game").hidden = true;
+    $("result").hidden = true;
+    hideReveal();
+    stopTimerUI();
+    tooltip.hide();
+    state.code = null;
+    state.youId = null;
+    state.game = { public: null, private: null };
+    state.seats = [];
     state.selectedTarget = null;
-    stopCountdown();
+    state.turnDeadline = 0;
+    state.busy = false;
+    // 回大廳就不該再自動重連回上一場（開機時例外：要留著紀錄去重連）
+    if (!keepSession && loadSession()) saveSession({ ingame: false });
   }
 
   function showGame() {
-    if (dom.screenLobby) dom.screenLobby.hidden = true;
-    if (dom.screenGame) dom.screenGame.hidden = false;
-    document.body.classList.add('is-playing');
+    $("lobby").hidden = true;
+    $("game").hidden = false;
   }
 
-  function renderRoom(payload, previousGame) {
-    if (!payload) return;
-    const game = payload.game;
-    if (!game || !game.public) {
-      // 還在等待室
-      if (state.game && state.game.public) showLobby();
-      state.game = null;
-      if (dom.lobbyHint && payload.code) {
-        setText(dom.lobbyHint, `已在房間 ${payload.code}，等待房主開始…`);
+  // ---------------------------------------------------------------- 開局提示
+  function showReveal(info) {
+    const ms = Math.max(400, Number(info.ms) || 3000);
+    $("revealRound").textContent = info.round ?? "1";
+    $("revealLive").textContent = info.live ?? 0;
+    $("revealBlank").textContent = info.blank ?? 0;
+    $("reveal").hidden = false;
+
+    const bar = $("revealBar");
+    bar.style.transition = "none";
+    bar.style.transform = "scaleX(1)";
+    // 強制 reflow，讓下一格的 transition 從頭開始
+    void bar.offsetWidth;
+    bar.style.transition = "transform " + ms + "ms linear";
+    bar.style.transform = "scaleX(0)";
+
+    state.revealUntil = Date.now() + state.serverOffset + ms;
+    state.revealMs = ms;
+    clearTimeout(state.revealTimer);
+    state.revealTimer = setTimeout(hideReveal, ms + 60);
+    renderButtons();
+  }
+
+  function hideReveal() {
+    clearTimeout(state.revealTimer);
+    state.revealUntil = 0;
+    state.revealMs = 0;
+    $("reveal").hidden = true;
+    renderButtons();
+  }
+
+  // ---------------------------------------------------------------- 渲染
+  function renderHearts(node, hp, maxHp) {
+    const total = Math.max(maxHp, hp);
+    let html = "";
+    for (let i = 0; i < total; i += 1) {
+      html += i < hp ? '<span class="heart">❤️</span>' : '<span class="heart is-lost">🖤</span>';
+    }
+    node.innerHTML = html;
+  }
+
+  function renderHud() {
+    const p = pub();
+    $("roundLabel").textContent = p ? p.round : 1;
+    $("codeLabel").textContent = state.code || "—";
+  }
+
+  /** 上半部：1~3 個對手並排；沒有 pub 時先用座位名單頂著 */
+  function renderFoes() {
+    const box = $("opponents");
+    const p = pub();
+    const live = aliveOthers();
+
+    // 選定的目標若已死亡或不存在就清掉；只剩一個活人時自動鎖定他
+    if (state.selectedTarget && !live.some((x) => x.id === state.selectedTarget)) {
+      state.selectedTarget = null;
+    }
+    if (!state.selectedTarget && live.length === 1) {
+      state.selectedTarget = live[0].id;
+    }
+
+    const list = p
+      ? others()
+      : state.seats.filter((s) => s.id !== state.youId).map((s) => ({ id: s.id, name: s.name, hp: 0, maxHp: 0, dead: false, itemCount: 0, ready: s.ready }));
+
+    box.style.setProperty("--n", String(Math.max(1, Math.min(3, list.length))));
+    box.innerHTML = "";
+
+    if (!list.length) {
+      const empty = document.createElement("div");
+      empty.className = "foe";
+      empty.classList.add("is-dead");
+      empty.innerHTML = '<span class="foe__name">（等待對手）</span>';
+      box.appendChild(empty);
+    }
+
+    list.forEach((foe) => {
+      const card = document.createElement("div");
+      card.className = "foe";
+      card.dataset.id = foe.id;
+      if (foe.dead) card.classList.add("is-dead");
+      if (p && p.activeId === foe.id) card.classList.add("is-active");
+      if (foe.id === state.selectedTarget) card.classList.add("is-selected");
+
+      const name = document.createElement("span");
+      name.className = "foe__name";
+      name.textContent = foe.name || "對手";
+      card.appendChild(name);
+
+      const hearts = document.createElement("div");
+      hearts.className = "hearts";
+      hearts.dataset.hearts = foe.id;
+      card.appendChild(hearts);
+      renderHearts(hearts, foe.hp || 0, foe.maxHp || 0);
+
+      const meta = document.createElement("span");
+      meta.className = "foe__items";
+      meta.textContent = p ? "🎒 " + (foe.itemCount || 0) : "準備中";
+      card.appendChild(meta);
+
+      if (p && p.activeId === foe.id) {
+        const tag = document.createElement("span");
+        tag.className = "foe__tag";
+        tag.textContent = "行動中";
+        card.appendChild(tag);
       }
-      return;
-    }
-    state.game = game;
-    showGame();
-    renderGame(payload, previousGame);
-  }
 
-  /* ========================================================================== */
-  /*  7. 遊戲畫面渲染                                                          */
-  /* ========================================================================== */
-  let lastRound = 0;
-
-  function renderGame(payload) {
-    const game = state.game;
-    if (!game || !game.public) return;
-    const pub = game.public;
-    const priv = game.private || { items: [], intel: [], mods: [] };
-
-    setText(dom.hudCode, (state.room && state.room.code) || pub.code || '----');
-    setText(dom.hudRound, pub.round || 1);
-
-    const remaining = pub.remaining || { live: 0, blank: 0, total: 0 };
-    setText(dom.countLive, remaining.live || 0);
-    setText(dom.countBlank, remaining.blank || 0);
-    setText(dom.countTotal, remaining.total || 0);
-
-    const active = (pub.players || []).find((p) => p.id === pub.activeId) || null;
-    const isYourTurn = Boolean(pub.activeId) && pub.activeId === state.youId;
-    const me = (pub.players || []).find((p) => p.id === state.youId) || null;
-    const canAct = isYourTurn && !state.busy && !state.revealShowing && !pub.winnerId;
-
-    document.body.classList.toggle('is-tense', isYourTurn);
-
-    // ---- 任務4：大字回合 ----
-    if (dom.turnBanner) {
-      const whose = !active
-        ? '等待開始'
-        : isYourTurn
-          ? '現在輪到你'
-          : `現在輪到 ${active.name}${active.isAI ? '（DeepSeek 娘）' : ''}`;
-      setText(dom.turnBanner, whose);
-      dom.turnBanner.classList.toggle('is-mine', isYourTurn);
-      dom.turnBanner.classList.toggle('is-theirs', Boolean(active) && !isYourTurn);
-    }
-
-    // ---- 左欄：生命值 ----
-    setText(dom.hpName, me ? me.name : '你');
-    renderHearts(dom.hpHearts, me ? me.hp : 0, me ? me.maxHp : 0, ' heart--big');
-    setText(dom.hpMeta, me ? `HP ${me.hp}/${me.maxHp}` : 'HP 0/0');
-    if (dom.hpPanel) dom.hpPanel.classList.toggle('is-active', isYourTurn);
-    renderMods(priv.mods || priv);
-    renderIntel(priv.intel || []);
-
-    // ---- 中欄：魔王 + 其他座位 ----
-    renderDemon(pub);
-    renderSeats(pub);
-    updateSeatHighlights(pub);
-    setText(dom.gunLabel, `瞄準中：${active ? active.name : '—'} · 彈匣 ${remaining.live ?? 0} 實 / ${remaining.blank ?? 0} 空`);
-    if (dom.gun) {
-      dom.gun.classList.toggle('is-mine', isYourTurn);
-      dom.gun.classList.toggle('is-theirs', Boolean(active) && !isYourTurn);
-    }
-
-    // ---- 右欄：道具 ----
-    renderInventory(priv.items || [], canAct, pub);
-
-    // ---- 新輪次：等 server 的 AMMO_REVEAL（若封包遺失就用狀態兜底）----
-    if (pub.round && pub.round !== lastRound) {
-      lastRound = pub.round;
-      if (!state.revealShowing && remaining.total > 0) {
-        showAmmoReveal({
-          round: pub.round,
-          live: remaining.live,
-          blank: remaining.blank,
-          total: remaining.total,
-          ms: 3000
+      // 點一下＝鎖定目標，再點一下＝直接開槍
+      if (!foe.dead && p && p.phase === "playing") {
+        card.addEventListener("click", () => {
+          if (state.selectedTarget === foe.id) {
+            shoot(foe.id);
+          } else {
+            state.selectedTarget = foe.id;
+            renderFoes();
+            renderButtons();
+          }
         });
       }
-    }
 
-    // ---- 底部按鈕 ----
-    renderActionButtons(pub, canAct);
-
-    renderLog(pub.log || []);
-    startTurnCountdown(payload.turnDeadline);
-  }
-
-  /* ---- 任務4：底部按鈕停用邏輯（非你回合一律 disabled） ---- */
-  function renderActionButtons(pub, canActOverride) {
-    const game = state.game;
-    const p = pub || (game && game.public);
-    if (!p) return;
-    const isYourTurn = Boolean(p.activeId) && p.activeId === state.youId;
-    const canAct = canActOverride != null
-      ? canActOverride
-      : isYourTurn && !state.busy && !state.revealShowing && !p.winnerId;
-
-    const enemies = enemiesOf(state.youId, p);
-    if (dom.btnSelf) {
-      dom.btnSelf.disabled = !canAct;
-      dom.btnSelf.classList.toggle('is-ready', canAct);
-    }
-    if (dom.btnEnemy) {
-      dom.btnEnemy.disabled = !canAct || enemies.length === 0;
-      dom.btnEnemy.classList.toggle('is-ready', canAct && enemies.length > 0);
-    }
-    if (dom.enemyHint) {
-      setText(dom.enemyHint, enemies.length ? `Fire Enemy · ${enemies.length} 個目標` : '沒有可攻擊的目標');
-    }
-    renderTargetPicker(enemies, canAct);
-  }
-
-  function enemiesOf(youId, pub) {
-    if (!pub || !Array.isArray(pub.players)) return [];
-    return pub.players.filter((p) => p.id !== youId && !p.dead);
-  }
-
-  function renderMods(priv) {
-    if (!dom.meMods) return;
-    const mods = (priv && priv.mods) || [];
-    dom.meMods.textContent = '';
-    if (!mods.length && !(priv && Number(priv.handcuffed))) return;
-    if (priv && Number(priv.handcuffed)) {
-      dom.meMods.appendChild(el('span', 'mod', '⛓️ 被銬住'));
-    }
-    mods.forEach((m) => {
-      const label = typeof m === 'string' ? m : (m.label || m.type || '效果');
-      dom.meMods.appendChild(el('span', 'mod', label));
+      box.appendChild(card);
     });
-  }
 
-  function renderIntel(intel) {
-    if (!dom.intel || !dom.intelShells) return;
-    const list = Array.isArray(intel) ? intel : [];
-    dom.intel.hidden = list.length === 0;
-    dom.intelShells.textContent = '';
-    list.forEach((shell) => {
-      const live = String(shell) === 'LIVE' || shell === true;
-      dom.intelShells.appendChild(el('span', `intel__shell${live ? ' is-live' : ''}`, live ? '實' : '空'));
-    });
-  }
-
-  /* ---- 任務2：右側道具欄 ---- */
-  function renderInventory(items, canUse, pub) {
-    if (!dom.inventory) return;
-    const catalog = new Map(((state.config && state.config.ITEMS) || []).map((it) => [it.id, it]));
-    dom.inventory.textContent = '';
-    if (!items.length) {
-      dom.inventory.appendChild(el('div', 'inventory__empty', '道具欄空空如也（換輪時會自動補充）'));
-      return;
-    }
-    items.forEach((entry, index) => {
-      const item = typeof entry === 'string' ? { id: entry } : entry;
-      const meta = catalog.get(item.id) || {};
-      const btn = el('button', 'item');
-      btn.type = 'button';
-      btn.dataset.item = item.id;
-      btn.title = meta.desc || meta.name || item.id;
-      if (item.usable === false) btn.disabled = true;
-      else btn.disabled = !canUse;
-      btn.appendChild(el('span', 'item__icon', meta.icon || '🎲'));
-      btn.appendChild(el('span', 'item__name', meta.name || item.name || item.id));
-      btn.appendChild(el('span', 'item__slot', String(index + 1)));
-      btn.addEventListener('click', () => useItem(item.id));
-      dom.inventory.appendChild(btn);
-    });
-    if (pub && pub.winnerId) setActionsDisabled(true);
-  }
-
-  /* ========================================================================== */
-  /*  8. 座位（其他玩家）                                                       */
-  /* ========================================================================== */
-  function renderSeats(pub) {
-    if (!dom.seats) return;
-    const players = pub.players || [];
-    const demon = demonOf(pub);
-    const others = players.filter((p) => p.id !== state.youId && (!demon || p.id !== demon.id));
-    dom.seats.textContent = '';
-    dom.seats.hidden = others.length === 0;
-    others.forEach((p) => {
-      const card = el('button', 'seat');
-      card.type = 'button';
-      card.dataset.seat = p.id;
-      card.classList.toggle('is-dead', Boolean(p.dead));
-      card.classList.toggle('is-active', p.id === pub.activeId);
-      card.classList.toggle('is-target', state.selectedTarget === p.id);
-      const top = el('div', 'seat__top');
-      top.appendChild(el('span', 'seat__name', p.name));
-      top.appendChild(el('span', 'seat__bag', `🎒 ${p.itemCount || 0}`));
-      card.appendChild(top);
-      const hearts = el('div', 'hearts');
-      renderHearts(hearts, p.hp, p.maxHp);
-      card.appendChild(hearts);
-      card.appendChild(el('span', 'seat__meta', p.dead ? '已倒下' : `HP ${p.hp}/${p.maxHp}`));
-      card.addEventListener('click', () => selectSeatTarget(p.id));
-      dom.seats.appendChild(card);
-    });
-  }
-
-  function selectSeatTarget(id) {
-    if (!state.game || !state.game.public) return;
-    if (state.game.public.activeId !== state.youId || state.busy) {
-      showToast('現在不是你的回合', 'warn');
-      return;
-    }
-    if (state.selectedTarget === id) {
-      state.selectedTarget = null;
-      shoot(id);
-      return;
-    }
-    state.selectedTarget = id;
-    const target = (state.game.public.players || []).find((p) => p.id === id);
-    showToast(`已鎖定 ${target ? target.name : '目標'}，再點一次開槍`, 'info');
-    updateSeatHighlights(state.game.public);
-    renderActionButtons(state.game.public);
-  }
-
-  function updateSeatHighlights(pub) {
-    $$('.seat', dom.seats).forEach((card) => {
-      const id = card.dataset.seat;
-      card.classList.toggle('is-active', id === pub.activeId);
-      card.classList.toggle('is-target', id === state.selectedTarget);
-    });
-  }
-
-  function renderTargetPicker(enemies, canAct) {
-    if (!dom.targetPicker) return;
-    if (!enemies.length) {
-      dom.targetPicker.hidden = true;
-      dom.targetPicker.textContent = '';
-      return;
-    }
-    dom.targetPicker.hidden = false;
-    dom.targetPicker.textContent = '';
-    enemies.forEach((p) => {
-      const btn = el('button', `target${state.selectedTarget === p.id ? ' is-selected' : ''}`, p.name);
-      btn.type = 'button';
-      btn.disabled = !canAct;
-      btn.addEventListener('click', () => {
-        state.selectedTarget = p.id;
-        renderTargetPicker(enemies, canAct);
-        updateSeatHighlights(state.game.public);
-        if (dom.demon) dom.demon.classList.toggle('is-target', demonState.id === p.id);
-        showToast(`已選定 ${p.name}，按「對敵人開槍」開火`, 'info');
+    // 多人局才需要選目標的列
+    const targets = $("targets");
+    if (p && p.phase === "playing" && live.length > 1) {
+      targets.hidden = false;
+      targets.innerHTML = "";
+      live.forEach((foe) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = foe.name + "（❤ " + foe.hp + "）";
+        if (foe.id === state.selectedTarget) b.classList.add("is-active");
+        b.addEventListener("click", () => {
+          state.selectedTarget = foe.id;
+          renderFoes();
+          renderButtons();
+        });
+        targets.appendChild(b);
       });
-      dom.targetPicker.appendChild(btn);
-    });
+    } else {
+      targets.hidden = true;
+      targets.innerHTML = "";
+    }
   }
 
-  /* ========================================================================== */
-  /*  9. 日誌 / 倒數                                                           */
-  /* ========================================================================== */
-  function renderLog(entries) {
-    if (!dom.log) return;
-    const list = Array.isArray(entries) ? entries.slice(-40) : [];
-    dom.log.textContent = '';
-    list.forEach((entry) => {
-      const text = typeof entry === 'string' ? entry : entry.text || '';
-      const kind = typeof entry === 'string' ? '' : entry.kind || '';
-      dom.log.appendChild(el('li', `log__row${kind ? ` log__row--${kind}` : ''}`, text));
-    });
-    dom.log.scrollTop = dom.log.scrollHeight;
+  function renderSelf() {
+    const me = myPlayer();
+    const p = pub();
+    $("myName").textContent = me ? me.name : state.myName || "—";
+    renderHearts($("myHearts"), me ? me.hp : 0, me ? me.maxHp : 0);
+
+    const node = $("me");
+    node.classList.toggle("is-turn", Boolean(p && p.activeId === state.youId));
+    node.classList.toggle("is-dead", Boolean(me && me.dead));
+
+    // 狀態標籤（由私有狀態的 mods 推得）
+    const mods = (priv() && priv().mods) || {};
+    const tags = [];
+    if (mods.sawnOff) tags.push("🔪 槍管已鋸短 ×" + mods.sawnOff);
+    if (mods.nails) tags.push("🔨 釘槍 ×" + mods.nails);
+    if (mods.cuffed) tags.push("⛓ 被銬住");
+    $("myStatus").innerHTML = tags.length
+      ? tags.map((t) => '<span class="tag">' + t + "</span>").join("")
+      : "狀態正常";
+
+    const intel = (priv() && priv().intel) || [];
+    const box = $("myIntel");
+    if (intel.length) {
+      box.hidden = false;
+      box.textContent =
+        "已知接下來：" + intel.map((s) => (s === "LIVE" ? "🔴 實彈" : "🔵 空包")).join(" → ");
+    } else {
+      box.hidden = true;
+      box.textContent = "";
+    }
   }
 
-  let countdownTimer = 0;
+  function renderTurn() {
+    const p = pub();
+    const node = $("turnLabel");
+    node.classList.remove("is-mine", "is-theirs");
 
-  function stopCountdown() {
-    clearInterval(countdownTimer);
-    countdownTimer = 0;
-    if (dom.turnTimer) dom.turnTimer.style.transform = 'scaleX(1)';
-  }
-
-  function startTurnCountdown(deadline) {
-    stopCountdown();
-    state.turnDeadline = Number(deadline || 0);
-    if (!state.turnDeadline || !dom.turnTimer) return;
-    const total = Number((state.config && state.config.RULES && state.config.RULES.TURN_TIMEOUT_MS) || 60000);
-    const tick = () => {
-      const left = state.turnDeadline - Date.now();
-      const ratio = clamp(left / total, 0, 1);
-      dom.turnTimer.style.transform = `scaleX(${ratio})`;
-      dom.turnTimer.classList.toggle('is-low', ratio < 0.25);
-      if (left <= 0) stopCountdown();
-    };
-    tick();
-    countdownTimer = setInterval(tick, 250);
-  }
-
-  /* ========================================================================== */
-  /*  10. 動作（送指令）                                                       */
-  /* ========================================================================== */
-  function shoot(targetId) {
-    if (!state.socket || state.busy) return;
-    const pub = state.game && state.game.public;
-    if (!pub || pub.activeId !== state.youId) {
-      showToast('現在不是你的回合', 'warn');
+    if (!p || p.phase !== "playing") {
+      if (p && p.phase === "gameover") node.textContent = "遊戲結束";
+      else if (p) node.textContent = "等待開局…";
+      // 已經在房間裡（有座位名單）＝等房主開局；連座位都沒有才是還沒同步到狀態
+      else node.textContent = state.seats.length || !state.code ? "等待開局…" : "正在同步遊戲狀態…";
       return;
     }
-    if (state.revealShowing) {
-      showToast('等裝填提示結束', 'warn');
+    if (isMyTurn()) {
+      node.textContent = "現在是你的回合";
+      node.classList.add("is-mine");
+    } else {
+      node.textContent = "現在是 " + (p.activeName || "對手") + " 的回合";
+      node.classList.add("is-theirs");
+    }
+  }
+
+  function itemEffect(itemId) {
+    const catalog = (state.config && state.config.ITEMS) || [];
+    const found = catalog.find((entry) => entry.id === itemId);
+    return found ? found.effect : null;
+  }
+
+  // ------------------------------------------------------------ 回合倒數
+  // 伺服器只送「到期時間」（turnDeadline，epoch ms），倒數由本地每 200ms 對時算出來，
+  // 所以就算推播遲到，數字也不會跳格。
+  function serverNow() {
+    return Date.now() + state.serverOffset;
+  }
+
+  function stopTurnTimer() {
+    if (state.turnTimerId) {
+      clearInterval(state.turnTimerId);
+      state.turnTimerId = null;
+    }
+  }
+
+  function turnSecondsLeft() {
+    if (!state.turnDeadline) return null;
+    return Math.max(0, Math.ceil((state.turnDeadline - serverNow()) / 1000));
+  }
+
+  function stopTimerUI() {
+    stopTurnTimer();
+    const wrap = $("turnTimerWrap");
+    if (wrap) wrap.hidden = true;
+    const ring = $("turnTimer");
+    if (ring) {
+      ring.classList.remove("is-danger", "is-over");
+      ring.textContent = "20";
+    }
+  }
+
+  function paintTurnTimer() {
+    const ring = $("turnTimer");
+    if (!ring) return;
+    const left = turnSecondsLeft();
+    if (left === null) {
+      stopTimerUI();
       return;
     }
-    state.busy = true;
-    setActionsDisabled(true);
-    audio.click();
-    const payload = targetId ? { targetId } : {};
-    console.debug('[shoot] → game:shoot', payload);
-    state.socket.emit('game:shoot', payload, (res) => {
-      if (res && res.ok === false) {
-        state.busy = false;
-        flashHint(errorText(res.error) || '這一槍沒送出去');
-        renderActionButtons(pub);
+    if (left <= 0) {
+      ring.classList.remove("is-danger");
+      ring.classList.add("is-over");
+      ring.textContent = "時間到";
+      stopTurnTimer();
+      return;
+    }
+    ring.classList.remove("is-over");
+    ring.textContent = String(left);
+    ring.classList.toggle("is-danger", left <= 5);
+  }
+
+  function syncTurnTimer() {
+    const wrap = $("turnTimerWrap");
+    if (!wrap) return;
+    const p = pub();
+    // 只有「正在玩 + 現在是我的回合」才顯示
+    if (!p || p.phase !== "playing" || !isMyTurn() || !state.turnDeadline) {
+      stopTimerUI();
+      return;
+    }
+    wrap.hidden = false;
+    if (!state.turnTimerId) {
+      paintTurnTimer();
+      state.turnTimerId = window.setInterval(paintTurnTimer, 200);
+    } else {
+      paintTurnTimer();
+    }
+  }
+
+  // ------------------------------------------------------------ 道具提示框
+  // pointer-events:none，所以貼著滑鼠也不會擋住點擊
+  const tooltip = {
+    el: () => $("itemTooltip"),
+    show(event, item, wasted) {
+      const box = this.el();
+      if (!box) return;
+      box.innerHTML =
+        '<span class="item-tooltip__name">' +
+        (item.icon ? item.icon + " " : "") +
+        esc(item.name) +
+        '</span><span class="item-tooltip__desc">' +
+        esc(item.desc || "") +
+        "</span>" +
+        (wasted ? '<span class="item-tooltip__meta">生命值已滿，現在用會浪費</span>' : "");
+      box.hidden = false;
+      this.move(event);
+    },
+    move(event) {
+      const box = this.el();
+      if (!box || box.hidden || !event) return;
+      const pad = 14;
+      const w = box.offsetWidth || 220;
+      const h = box.offsetHeight || 60;
+      let x = (event.clientX || 0) + pad;
+      let y = (event.clientY || 0) + pad;
+      if (x + w + 8 > window.innerWidth) x = Math.max(8, (event.clientX || 0) - w - pad);
+      if (y + h + 8 > window.innerHeight) y = Math.max(8, (event.clientY || 0) - h - pad);
+      box.style.left = x + "px";
+      box.style.top = y + "px";
+    },
+    hide() {
+      const box = this.el();
+      if (!box) return;
+      box.hidden = true;
+      box.textContent = "";
+    },
+  };
+
+  function esc(text) {
+    return String(text == null ? "" : text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderItems() {
+    const grid = $("itemsGrid");
+    const items = (priv() && priv().items) || [];
+    const canUse = isMyTurn() && !revealActive() && !state.busy && pub() && pub().phase === "playing";
+    const me = myPlayer();
+    const hpFull = Boolean(me && !me.dead && me.hp >= me.maxHp);
+    grid.innerHTML = "";
+
+    items.forEach((item) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "slot";
+      // 純回血道具在滿血時沒有意義：直接鎖住，不讓玩家白花一個道具
+      const effect = itemEffect(item.id);
+      const wasted = hpFull && (effect === "heal" || effect === "random_heal");
+      btn.disabled = !canUse || wasted;
+      btn.title = wasted ? "生命值已滿，現在用會浪費。" : item.desc || "";
+      if (wasted) btn.classList.add("slot--waste");
+      btn.innerHTML =
+        '<span class="slot__icon">' +
+        (item.icon || "❓") +
+        '</span><span class="slot__name">' +
+        item.name +
+        "</span>";
+      btn.addEventListener("click", () => useItem(item.id));
+      // 懸停說明：mouseenter 填內容、mousemove 跟著滑鼠跑、mouseleave 收起來
+      btn.addEventListener("mouseenter", (event) => tooltip.show(event, item, wasted));
+      btn.addEventListener("mousemove", (event) => tooltip.move(event));
+      btn.addEventListener("mouseleave", () => tooltip.hide());
+      // 手機沒有 hover：點完順手收掉
+      btn.addEventListener("click", () => tooltip.hide());
+      grid.appendChild(btn);
+    });
+
+    const empty = Math.max(0, 3 - items.length);
+    for (let i = 0; i < empty; i += 1) {
+      const slot = document.createElement("div");
+      slot.className = "slot slot--empty";
+      slot.textContent = "空";
+      grid.appendChild(slot);
+    }
+  }
+
+  function renderButtons() {
+    const p = pub();
+    // 保險：busy 卡住（ack 掉了 / 伺服器重啟）不該讓按鈕永遠灰著
+    if (state.busy && state.busyAt && Date.now() - state.busyAt > 4000) {
+      state.busy = false;
+    }
+
+    const isLocked = revealActive(); // revealActive() 會自動判斷伺服器時間
+    const canAct =
+      Boolean(p) && p.phase === "playing" && p.activeId === state.youId && !isLocked && !state.busy;
+
+    const live = aliveOthers();
+    $("btnSelf").disabled = !canAct;
+    // 有多個對手時，按鈕要能按（按下去會請你選目標）
+    $("btnEnemy").disabled = !canAct || live.length === 0;
+
+    // 房主在大廳（遊戲還沒開始）才看得到「開局」
+    const inLobby = !p || p.phase === "lobby";
+    $("startBtn").hidden = !(inLobby && state.hostId === state.youId);
+
+    const target = live.find((x) => x.id === state.selectedTarget) || null;
+    const sub = $("enemySub");
+    if (!p || p.phase !== "playing") {
+      sub.textContent = "實彈才痛，但打完就交棒";
+    } else if (live.length === 0) {
+      sub.textContent = "沒有可瞄準的對手";
+    } else if (live.length === 1) {
+      sub.textContent = "→ " + live[0].name;
+    } else {
+      sub.textContent = target ? "→ " + target.name : "先選一個對手";
+    }
+
+    const hint = $("hint");
+    if (!p || p.phase !== "playing") {
+      hint.textContent = inLobby ? "等待房主開局…" : "";
+    } else if (isLocked) {
+      hint.textContent = "公布彈藥中…";
+    } else if (!isMyTurn()) {
+      hint.textContent = "等 " + (p.activeName || "對手") + " 行動";
+    } else if (!live.length) {
+      hint.textContent = "沒有可瞄準的對手";
+    } else {
+      hint.textContent = "";
+    }
+  }
+
+  function renderAll() {
+    renderHud();
+    renderFoes();
+    renderSelf();
+    renderTurn();
+    renderItems();
+    renderButtons();
+    syncTurnTimer();
+  }
+
+  // ---------------------------------------------------------------- 動作演出
+  function flashGun(kind) {
+    const gun = $("gun");
+    gun.classList.remove("is-aiming", "is-live", "is-blank", "is-recoil");
+    void gun.offsetWidth;
+    gun.classList.add("is-aiming");
+    if (kind === "live") gun.classList.add("is-live");
+    if (kind === "blank") gun.classList.add("is-blank");
+  }
+
+  function recoil() {
+    const gun = $("gun");
+    gun.classList.remove("is-recoil");
+    void gun.offsetWidth;
+    gun.classList.add("is-recoil");
+  }
+
+  function shakeScreen() {
+    document.body.classList.remove("is-shaking");
+    void document.body.offsetWidth;
+    document.body.classList.add("is-shaking");
+  }
+
+  function pulseHearts(node) {
+    if (!node) return;
+    node.classList.remove("is-hit");
+    void node.offsetWidth;
+    node.classList.add("is-hit");
+  }
+
+  function showHit(id, damage) {
+    if (id === state.youId) {
+      pulseHearts($("myHearts"));
+    } else {
+      pulseHearts(document.querySelector('[data-hearts="' + id + '"]'));
+    }
+    if (damage > 0) $("hint").textContent = "-" + damage + " HP";
+  }
+
+  function showTaunt(action) {
+    const node = $("bubble");
+    node.textContent = action.text || "";
+    node.hidden = false;
+    node.style.animation = "none";
+    void node.offsetWidth;
+    node.style.animation = "";
+    clearTimeout(showTaunt._timer);
+    showTaunt._timer = setTimeout(() => {
+      node.hidden = true;
+    }, 4600);
+  }
+
+  // ---------------------------------------------------------------- 伺服器動作
+  function applyAction(action) {
+    if (!action || !action.type) return;
+    switch (action.type) {
+      case "GAME_START":
+        showGame();
+        break;
+      case "RELOAD":
+        $("roundLabel").textContent = action.round ?? "1";
+        flashGun("blank");
+        break;
+      case "AMMO_REVEAL":
+        showReveal({
+          round: action.round,
+          live: action.live,
+          blank: action.blank,
+          ms: action.ms,
+        });
+        break;
+      case "AMMO_REVEAL_END":
+        hideReveal();
+        break;
+      case "ITEM_USED":
+        $("hint").textContent = (action.playerName || "有人") + " 用了 " + (action.itemName || "道具");
+        break;
+      case "SHOT": {
+        flashGun(action.realShell ? "live" : "blank");
+        recoil();
+        if (action.realShell) shakeScreen();
+        if (action.damage > 0) showHit(action.targetId, action.damage);
+        break;
+      }
+      case "DAMAGE":
+        if (action.damage > 0) showHit(action.targetId || action.playerId, action.damage);
+        break;
+      case "HEAL":
+        $("hint").textContent = "回復 " + (action.amount || 1) + " HP";
+        break;
+      case "TAUNT":
+        showTaunt(action);
+        break;
+      case "ROUND_END":
+        $("hint").textContent = "本輪子彈打完了，重新裝填…";
+        break;
+      default:
+        break;
+    }
+  }
+
+  function runActions(actions) {
+    // 串行播放，避免多個動作的動畫互相打斷
+    state.queue = state.queue.then(async () => {
+      for (const action of actions || []) {
+        applyAction(action);
+        if (action.type === "SHOT" || action.type === "TAUNT") await sleep(420);
       }
     });
-    // 保險：5 秒內沒收到任何狀態就解鎖，避免卡死
+    return state.queue;
+  }
+
+  // ---------------------------------------------------------------- 送意圖
+  function shoot(targetId) {
+    if (!state.socket || state.busy) return;
+    if (revealActive()) return;
+    state.busy = true;
+    state.busyAt = Date.now();
+    renderButtons();
+    renderItems();
+
+    state.socket.emit("game:shoot", { targetId: targetId }, (res) => {
+      state.busy = false;
+      if (res && res.ok === false) {
+        toast(ERROR_TEXT[res.error] || res.error);
+      }
+      renderAll();
+    });
+    // 保險：ack 沒回來也不要卡住
     setTimeout(() => {
-      const live = state.game && state.game.public;
-      if (state.busy && live) {
+      if (state.busy) {
         state.busy = false;
-        renderActionButtons(live);
+        renderAll();
       }
     }, 5000);
   }
 
   function useItem(itemId) {
-    if (!state.socket || state.busy || !itemId) return;
-    const pub = state.game && state.game.public;
-    if (!pub || pub.activeId !== state.youId) {
-      showToast('現在不是你的回合', 'warn');
-      return;
-    }
-    let payload = { itemId };
-    const enemies = enemiesOf(state.youId, pub);
-    if (itemId === 'HANDCUFFS' && enemies.length > 1) {
-      const names = enemies.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
-      const pick = window.prompt(`要銬住誰？輸入編號：\n${names}`, '1');
-      const index = Number(pick) - 1;
-      if (!Number.isInteger(index) || !enemies[index]) return;
-      payload = { itemId, targetId: enemies[index].id };
-    }
+    if (!state.socket || state.busy) return;
+    if (revealActive()) return;
     state.busy = true;
-    setActionsDisabled(true);
-    audio.item();
-    state.socket.emit('game:item', payload, (res) => {
+    state.busyAt = Date.now();
+    renderButtons();
+    renderItems();
+
+    state.socket.emit("game:item", { itemId: itemId }, (res) => {
+      state.busy = false;
       if (res && res.ok === false) {
-        state.busy = false;
-        flashHint(errorText(res.error) || '道具用不了');
-        renderActionButtons(pub);
+        toast(ERROR_TEXT[res.error] || res.error);
       }
+      renderAll();
     });
     setTimeout(() => {
       if (state.busy) {
         state.busy = false;
-        renderActionButtons(state.game && state.game.public);
+        renderAll();
       }
     }, 5000);
   }
 
-  function setActionsDisabled(disabled) {
-    [dom.btnSelf, dom.btnEnemy].forEach((btn) => {
-      if (btn) btn.disabled = Boolean(disabled);
-    });
-    $$('.item', dom.inventory).forEach((btn) => {
-      btn.disabled = Boolean(disabled) || btn.dataset.used === '1';
-    });
-    $$('.target', dom.targetPicker).forEach((btn) => {
-      btn.disabled = Boolean(disabled);
-    });
+  function toast(text, kind) {
+    const node = $("hint");
+    node.textContent = text;
+    node.style.color = kind === "error" ? "#fca5a5" : "";
+    setTimeout(() => {
+      node.style.color = "";
+    }, 2200);
   }
 
-  const ERROR_TEXT = {
-    NOT_YOUR_TURN: '現在不是你的回合',
-    AMMO_REVEAL: '先看完這回合的裝填提示',
-    GAME_NOT_PLAYING: '遊戲還沒開始',
-    NO_ITEMS: '這件道具用不到',
-    ONCE_PER_TURN: '這個道具一回合只能用一次',
-    BAD_TARGET: '目標無效',
-    UNKNOWN_ITEM: '未知道具',
-    HANDCUFFS: '手銬已經用過了',
-    INVALID_ACTION: '指令無效'
-  };
+  // ---------------------------------------------------------------- Socket
+  // 重新整理（F5）之後要把座位認回來，所以先準備好重連用的函式
+  let rejoinTries = 0;
+  let watchdog = null;
 
-  function errorText(code) {
-    return ERROR_TEXT[code] || code;
-  }
+  function tryRejoin() {
+    const socket = state.socket;
+    const session = loadSession();
+    if (!socket || !session || !session.code) return Promise.resolve(false);
+    if (!state.myName && session.name) state.myName = session.name;
 
-  function flashHint(text) {
-    showToast(text, 'warn');
-  }
-
-  /* ========================================================================== */
-  /*  11. 播放 server 的 actions                                               */
-  /* ========================================================================== */
-  let actionQueue = Promise.resolve();
-
-  function playActions(actions) {
-    actionQueue = actionQueue.then(async () => {
-      for (const action of actions) {
-        try {
-          await playAction(action);
-        } catch (err) {
-          console.warn('[action] 播放失敗', action && action.type, err);
+    return new Promise((resolve) => {
+      socket.emit("room:rejoin", { code: session.code, name: session.name || "" }, (res) => {
+        if (!res || res.ok !== true) {
+          // 房間已經結束或被清掉：清紀錄、留在大廳
+          clearSession();
+          state.code = null;
+          state.youId = null;
+          resolve(false);
+          return;
         }
-      }
+        rejoinTries = 0;
+        state.code = res.code;
+        state.youId = res.youId;
+        state.hostId = res.hostId || state.hostId;
+        showGame();
+        renderAll();
+        // 重連時如果那局剛好已經結束，直接把結算畫面補回來
+        if (pub() && pub().phase === "gameover" && $("result").hidden) {
+          showResult({ winnerId: pub().winnerId });
+        }
+        resolve(true);
+      });
     });
-    return actionQueue;
   }
 
-  async function playAction(action) {
-    if (!action || !action.type) return;
-    switch (action.type) {
-      /* ---- 任務1：本回合裝填 ---- */
-      case 'AMMO_REVEAL': {
-        showAmmoReveal({
-          round: action.round,
-          live: action.live,
-          blank: action.blank,
-          total: action.total,
-          ms: action.ms
-        });
-        await sleep(Math.max(400, Number(action.ms || 3000)));
-        break;
-      }
-      case 'AMMO_REVEAL_END': {
-        hideAmmoReveal();
-        break;
-      }
+  // 保險：真的沒收到 room:update 時，主動再要一次狀態（最多 3 次）
+  function armStateWatchdog() {
+    if (watchdog) window.clearInterval(watchdog);
+    watchdog = window.setInterval(() => {
+      const session = loadSession();
+      if (!session || !session.ingame) return;
+      if (pub()) return;
+      if (rejoinTries >= 3) return;
+      rejoinTries += 1;
+      tryRejoin();
+    }, 1500);
+  }
 
-      /* ---- 開局 / 裝彈 ---- */
-      case 'GAME_START': {
-        lastRound = 0;
-        showToast('遊戲開始', 'info');
-        break;
+  function connect() {
+    const socket = io({ transports: ["websocket", "polling"] });
+    state.socket = socket;
+
+    socket.on("connect", () => {
+      setMessage("已連上伺服器。", "ok");
+      // 重新整理 / 斷線重連：拿存下來的房碼與名字把座位認回來
+      tryRejoin();
+    });
+
+    socket.on("disconnect", () => {
+      setMessage("與伺服器斷線，重新連線中…", "error");
+    });
+
+    socket.on("server:hello", (payload) => {
+      if (payload && payload.config) state.config = payload.config;
+    });
+
+    socket.on("room:update", (payload) => {
+      if (!payload) return;
+      state.code = payload.code || state.code;
+      state.hostId = payload.hostId || state.hostId;
+      // 伺服器直接告訴我們「你是哪個 id」，不必再靠建房時的 ack 猜
+      if (payload.youId) state.youId = payload.youId;
+      state.seats = payload.seats || [];
+      // 伺服器說「沒有進行中的遊戲」就真的清掉，免得重開房後還畫著上一局的殘影
+      state.game = payload.game || { public: null, private: null };
+
+      if (typeof payload.serverNow === "number") {
+        state.serverOffset = payload.serverNow - Date.now();
       }
-      case 'RELOAD':
-      case 'ROUND_STATE': {
-        rotateCylinder(1);
-        if (action.type === 'RELOAD') {
-          setText(dom.gunLabel, `第 ${action.round} 輪：裝填 ${action.live} 實 / ${action.blank} 空`);
-          showAmmoReveal({
-            round: action.round,
-            live: action.live,
-            blank: action.blank,
-            total: action.total,
-            ms: (state.config && state.config.AMMO && state.config.AMMO.AMMO_REVEAL
-              ? state.config.AMMO.AMMO_REVEAL.REVEAL_MS
-              : 3000)
+      state.revealUntil = payload.revealUntil || 0;
+      state.revealMs = payload.revealMs || 0;
+      state.turnDeadline = payload.turnDeadline || 0;
+      syncTurnTimer();
+
+      if (pub()) showGame();
+      renderAll();
+      saveSession({
+        code: state.code,
+        name: state.myName || (loadSession() || {}).name || "",
+        ingame: Boolean(pub()),
+      });
+      armStateWatchdog();
+
+      // 換人之後再兜一次提示（例如中途加入正卡在公布彈藥）
+      if (state.revealUntil > Date.now() + state.serverOffset) {
+        const rem = (pub() && pub().remaining) || {};
+        if ($("reveal").hidden) {
+          showReveal({
+            round: pub() ? pub().round : 1,
+            live: rem.live || 0,
+            blank: rem.blank || 0,
+            ms: Math.max(300, state.revealUntil - (Date.now() + state.serverOffset)),
           });
-          await sleep(260);
         }
-        break;
+      } else if (!$("reveal").hidden && state.revealUntil === 0) {
+        hideReveal();
       }
-
-      /* ---- 任務3：開槍 ---- */
-      case 'SHOT': {
-        await playShotVFX(action);
-        break;
-      }
-
-      case 'TAUNT': {
-        showDemonTaunt(action);
-        await sleep(260);
-        break;
-      }
-      case 'ITEM_USED': {
-        showToast(`${action.playerName || '有人'} 用了 ${action.itemName || action.name || '道具'}`, 'info');
-        audio.item();
-        await sleep(220);
-        break;
-      }
-      case 'ITEM_FAILED': {
-        showToast(`${action.itemName || '道具'} 使用失敗`, 'warn');
-        await sleep(180);
-        break;
-      }
-      case 'PEEK': {
-        const shells = Array.isArray(action.shells) ? action.shells : [];
-        showToast(`看到了：${shells.map((s) => (s === 'LIVE' ? '🔴實彈' : '🔵空包')).join(' / ')}`, 'info');
-        await sleep(200);
-        break;
-      }
-      case 'HEAL': {
-        showToast(`${action.playerName || '有人'} 回復 ${action.amount} HP`, 'good');
-        if (action.playerId === demonState.id) showDamageFloat(action.amount, { heal: true });
-        await sleep(200);
-        break;
-      }
-      case 'DAMAGE': {
-        if (action.playerId === demonState.id) showDamageFloat(action.amount, { label: '扣血' });
-        await sleep(160);
-        break;
-      }
-      case 'EJECT': {
-        rotateCylinder(1);
-        showToast(`退出一發${action.shell === 'LIVE' ? '實彈' : '空包彈'}`, 'info');
-        audio.empty();
-        await sleep(260);
-        break;
-      }
-      case 'MODIFIER': {
-        await sleep(120);
-        break;
-      }
-      case 'EXTRA_TURN':
-      case 'STEAL_TURN': {
-        showToast(action.type === 'EXTRA_TURN' ? '額外回合！' : '奪取了回合！', 'good');
-        await sleep(240);
-        break;
-      }
-      case 'BARRAGE': {
-        showToast('連發中…', 'warn');
-        await sleep(240);
-        break;
-      }
-      case 'ROUND_END': {
-        showToast('子彈打光了，重新裝彈', 'info');
-        await sleep(320);
-        break;
-      }
-      case 'GAME_OVER': {
-        await sleep(400);
-        break;
-      }
-      case 'TIMEOUT': {
-        showToast('逾時，自動開槍', 'warn');
-        await sleep(300);
-        break;
-      }
-      default:
-        await sleep(60);
-    }
-  }
-
-  async function playShotVFX(action) {
-    const isLive = action.shell === 'LIVE' || action.realShell === 'LIVE';
-    const hitDemon = demonState.id && action.targetId === demonState.id;
-    const shooterName = action.shooterName || '有人';
-    const targetName = action.targetName || (hitDemon ? demonState.name : '某人');
-
-    if (dom.gun) restartAnimation(dom.gun, 'is-aiming');
-    await sleep(150);
-
-    if (isLive) {
-      audio.gunshot();
-      vfxFlash('fire');
-      vfxScreenShake({ hard: true });
-      if (dom.gun) restartAnimation(dom.gun, 'is-firing');
-      if (hitDemon) {
-        demonHit(action.damage);
-      } else {
-        const seat = action.targetId ? $(`[data-seat="${action.targetId}"]`, dom.seats) : null;
-        const point = centerOf(seat || dom.demonPortrait);
-        vfxParticles(point.x, point.y, 'blood');
-        vfxBloodScreen();
-        if (seat) restartAnimation(seat, 'is-hit');
-        if (action.targetId === state.youId) {
-          showDamageFloat(action.damage, { label: '扣血' });
-          if (dom.hpHearts) restartAnimation(dom.hpHearts, 'is-hit');
-        }
-      }
-      showToast(`${shooterName} 對 ${targetName} 開槍：實彈！`, 'danger');
-    } else {
-      audio.empty();
-      vfxFlash('fire');
-      vfxScreenShake({ hard: false });
-      const point = centerOf(action.targetId === demonState.id ? dom.demonPortrait : dom.gun);
-      vfxParticles(point.x, point.y, 'spark', 8);
-      if (shooterName) showToast(`${shooterName} 對 ${targetName} 開槍：空包彈`, 'safe');
-    }
-
-    if (action.remaining) {
-      setText(dom.countLive, action.remaining.live ?? 0);
-      setText(dom.countBlank, action.remaining.blank ?? 0);
-      setText(dom.countTotal, action.remaining.total ?? 0);
-    }
-    await sleep(320);
-    if (dom.gun) dom.gun.classList.remove('is-aiming', 'is-firing');
-  }
-
-  /* ========================================================================== */
-  /*  12. 結算畫面                                                             */
-  /* ========================================================================== */
-  function showResult({ chamber, winnerId }) {
-    const pub = state.game && state.game.public;
-    const winner = pub ? (pub.players || []).find((p) => p.id === winnerId) : null;
-    const youWin = winnerId === state.youId;
-    if (dom.resultTitle) {
-      setText(dom.resultTitle, youWin ? '你贏了' : winner ? `${winner.name} 贏了` : '遊戲結束');
-      dom.resultTitle.className = `result-title${youWin ? ' is-win' : ' is-lose'}`;
-    }
-    if (dom.resultSub) {
-      setText(dom.resultSub, youWin ? '你把 DeepSeek 娘的 token 打光了。' : '這次被算力壓過去了。');
-    }
-    if (dom.revealList) {
-      dom.revealList.textContent = '';
-      (Array.isArray(chamber) ? chamber : []).forEach((shell) => {
-        const live = String(shell) === 'LIVE';
-        dom.revealList.appendChild(el('li', `reveal-list__row${live ? ' is-live' : ''}`, live ? '🔴 實彈' : '🔵 空包彈'));
-      });
-    }
-    if (dom.modalResult) dom.modalResult.hidden = false;
-    hideAmmoReveal();
-    state.busy = false;
-    (youWin ? audio.win : audio.lose)();
-  }
-
-  /* ========================================================================== */
-  /*  13. 事件綁定                                                             */
-  /* ========================================================================== */
-  function bindEvents() {
-    if (dom.inputName) dom.inputName.value = safeStorageGet('devil.name', RANDOM_NAME);
-    if (dom.inputCode) dom.inputCode.value = safeStorageGet('devil.code', '');
-
-    dom.inputName && dom.inputName.addEventListener('input', () => safeStorageSet('devil.name', dom.inputName.value.trim()));
-    dom.inputCode && dom.inputCode.addEventListener('input', () => {
-      dom.inputCode.value = dom.inputCode.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-      safeStorageSet('devil.code', dom.inputCode.value);
     });
 
-    $$('.mode').forEach((btn) => btn.addEventListener('click', () => setMode(btn.dataset.mode)));
+    socket.on("game:action", (payload) => {
+      if (!payload) return;
+      runActions(payload.actions);
+    });
 
-    dom.btnCreate && dom.btnCreate.addEventListener('click', () => {
-      if (!state.socket) return;
-      const name = (dom.inputName.value || '').trim() || RANDOM_NAME;
-      const payload = {
-        name,
-        mode: state.mode,
-        maxPlayers: state.mode === 'multi' ? Number(dom.selectMaxPlayers.value || 2) : 2,
-        flags: {}
-      };
-      setText(dom.lobbyHint, '建立房間中…');
-      state.socket.emit('room:create', payload, (res) => {
-        if (!res || res.ok === false) {
-          setText(dom.lobbyHint, `建立失敗：${(res && res.error) || '未知錯誤'}`);
+    socket.on("game:error", (payload) => {
+      if (!payload) return;
+      toast(ERROR_TEXT[payload.error] || payload.error || "發生錯誤");
+    });
+
+    socket.on("game:reveal", (payload) => {
+      if (!payload) return;
+      showResult(payload);
+    });
+
+    socket.on("lobby:update", (payload) => {
+      if (!payload) return;
+      state.seats = payload.seats || [];
+      state.hostId = payload.hostId || state.hostId;
+      state.lobbyMax = payload.maxPlayers || state.lobbyMax;
+      renderLobbyPlayers(payload);
+      if (!payload.inGame) renderAll();
+    });
+  }
+
+  // 大廳的人數面板：「2 / 4 人（房間已滿）」＋座位清單
+  function renderLobbyPlayers(payload) {
+    const box = $("lobbyPlayers");
+    if (!box) return;
+    if (!payload || !payload.code) {
+      box.hidden = true;
+      box.textContent = "";
+      return;
+    }
+    const limit = payload.humanLimit || state.lobbyMax || 4;
+    const joined = typeof payload.joined === "number" ? payload.joined : (payload.seats || []).filter((s) => !s.isAI).length;
+    const humans = (payload.seats || []).filter((s) => !s.isAI);
+    const names = humans.map((s) => s.name + (s.connected ? "" : "(離線)"));
+    const full = Boolean(payload.full);
+    box.hidden = false;
+    box.className = "lobby__players" + (full ? " is-full" : "");
+    box.textContent =
+      "人數 " + joined + " / " + limit + (limit === 1 ? "（單人對 AI）" : "") +
+      (full ? "・房間已滿" : "") +
+      (names.length ? "　" + names.join("、") : "");
+  }
+
+  // ---------------------------------------------------------------- 結算
+  function showResult(payload) {
+    const winnerId = payload.winnerId;
+    const win = winnerId === state.youId;
+    const title = $("resultTitle");
+    title.textContent = win ? "你活下來了" : winnerId ? "你輸了" : "無人生還";
+    title.className = "result__title " + (win ? "is-win" : "is-lose");
+
+    const chamber = (payload.chamber || []).map((s) => (s === "LIVE" ? "🔴" : "🔵")).join(" ");
+    $("resultText").textContent = chamber ? "最後的彈藥順序：" + chamber : "子彈已經打完了。";
+    $("result").hidden = false;
+    renderAll();
+  }
+
+  // ---------------------------------------------------------------- 大廳事件
+  function myName() {
+    const value = ($("nameInput").value || "").trim();
+    return value || "賭徒" + Math.floor(Math.random() * 900 + 100);
+  }
+
+  function bindLobby() {
+    $("btnSolo").addEventListener("click", () => {
+      const socket = state.socket;
+      if (!socket) return;
+      setMessage("建立房間中…");
+      const name = myName();
+      socket.emit("room:create", { name: name }, (res) => {
+        if (!res || res.ok !== true) {
+          setMessage(ERROR_TEXT[res && res.error] || "建立房間失敗", "error");
           return;
         }
-        state.youId = res.youId || state.youId;
-        safeStorageSet('devil.code', res.code || '');
-        setText(dom.lobbyHint, `房間 ${res.code} 已建立，等待開始…`);
-        audio.click();
+        state.code = res.code;
+        state.youId = res.youId;
+        state.myName = name;
+        saveSession({ code: res.code, name: name, ingame: true });
+        socket.emit("game:start", {}, (start) => {
+          if (!start || start.ok !== true) {
+            setMessage(ERROR_TEXT[start && start.error] || "開局失敗", "error");
+            return;
+          }
+          showGame();
+          renderAll();
+        });
       });
     });
 
-    dom.btnJoin && dom.btnJoin.addEventListener('click', () => {
-      if (!state.socket) return;
-      const code = (dom.inputCode.value || '').trim().toUpperCase();
-      if (!code) {
-        setText(dom.lobbyHint, '請先輸入房碼');
-        return;
-      }
-      const name = (dom.inputName.value || '').trim() || RANDOM_NAME;
-      state.socket.emit('room:join', { code, name }, (res) => {
-        if (!res || res.ok === false) {
-          setText(dom.lobbyHint, `加入失敗：${(res && res.error) || '房碼錯誤'}`);
+    $("btnCreate").addEventListener("click", () => {
+      const socket = state.socket;
+      if (!socket) return;
+      const name = myName();
+      // 房主選的人數：1 = 單人對 AI，2~4 = 真實玩家數（AI 不佔名額）
+      const maxPlayers = Number(($("maxPlayersSelect") || {}).value || 4);
+      socket.emit("room:create", { name: name, maxPlayers: maxPlayers }, (res) => {
+        if (!res || res.ok !== true) {
+          setMessage(ERROR_TEXT[res && res.error] || "建立房間失敗", "error");
           return;
         }
-        state.youId = res.youId || state.youId;
-        safeStorageSet('devil.code', code);
-        audio.click();
+        state.code = res.code;
+        state.lobbyMax = res.maxPlayers || maxPlayers;
+        state.youId = res.youId;
+        state.myName = name;
+        saveSession({ code: res.code, name: name, ingame: false });
+        showGame();
+        setMessage("房間已建立，房碼 " + res.code + "（把房碼給朋友，按開局開始）", "ok");
+        renderAll();
       });
     });
 
-    // ---- 任務3：兩個大按鈕 ----
-    dom.btnSelf && dom.btnSelf.addEventListener('click', () => shoot(null));
-    dom.btnEnemy && dom.btnEnemy.addEventListener('click', () => {
-      const pub = state.game && state.game.public;
-      if (!pub) return;
-      const enemies = enemiesOf(state.youId, pub);
-      if (!enemies.length) return;
-      const target = enemies.find((p) => p.id === state.selectedTarget) || enemies[0];
-      shoot(target.id);
-    });
-
-    // 點魔王（第一下選目標、第二下開槍）
-    dom.demonPortrait && dom.demonPortrait.addEventListener('click', () => {
-      if (!demonState.id) return;
-      if (state.selectedTarget === demonState.id) {
-        state.selectedTarget = null;
-        shoot(demonState.id);
+    $("btnJoin").addEventListener("click", () => {
+      const socket = state.socket;
+      if (!socket) return;
+      const code = ($("codeInput").value || "").trim().toUpperCase();
+      if (code.length < 4) {
+        setMessage("請輸入 4 碼房碼。", "error");
         return;
       }
-      state.selectedTarget = demonState.id;
-      if (dom.demon) dom.demon.classList.add('is-target');
-      updateSeatHighlights(state.game ? state.game.public : {});
-      renderActionButtons(state.game ? state.game.public : null);
-      showToast(`已鎖定 ${demonState.name}，再點一次扣扳機`, 'info');
+      const name = myName();
+      socket.emit("room:join", { code: code, name: name }, (res) => {
+        if (!res || res.ok !== true) {
+          setMessage(ERROR_TEXT[res && res.error] || "加入失敗", "error");
+          return;
+        }
+        state.code = res.code;
+        state.youId = res.youId;
+        state.hostId = res.hostId;
+        state.myName = name;
+        saveSession({ code: res.code, name: name });
+        showGame();
+        renderAll();
+      });
     });
 
-    dom.btnRematch && dom.btnRematch.addEventListener('click', () => {
-      if (!state.socket) return;
-      state.socket.emit('game:rematch', {}, () => {});
-      if (dom.modalResult) dom.modalResult.hidden = true;
+    $("nameInput").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") $("btnSolo").click();
     });
-    dom.btnBackLobby && dom.btnBackLobby.addEventListener('click', () => {
-      if (state.socket) state.socket.emit('room:leave', {}, () => {});
-      if (dom.modalResult) dom.modalResult.hidden = true;
-      state.game = null;
-      lastRound = 0;
-      showLobby();
+    $("codeInput").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") $("btnJoin").click();
     });
-    dom.btnQuit && dom.btnQuit.addEventListener('click', () => {
-      if (state.socket) state.socket.emit('room:leave', {}, () => {});
-      state.game = null;
-      lastRound = 0;
+  }
+
+  function bindGame() {
+    $("btnSelf").addEventListener("click", () => shoot(null));
+
+    $("btnEnemy").addEventListener("click", () => {
+      const live = aliveOthers();
+      if (!live.length) {
+        toast("沒有可瞄準的對手");
+        return;
+      }
+      // 只有一個對手：直接打他
+      if (live.length === 1) {
+        state.selectedTarget = live[0].id;
+        shoot(live[0].id);
+        return;
+      }
+      // 多個對手：已經鎖定就直接打，還沒鎖定就請他先選
+      const chosen = live.find((x) => x.id === state.selectedTarget);
+      if (chosen) {
+        shoot(chosen.id);
+        return;
+      }
+      $("targets").hidden = false;
+      toast("先選一個對手（點上面的對手卡片也可以）");
+    });
+
+    $("quitBtn").addEventListener("click", () => {
+      if (state.socket && state.code) {
+        state.socket.emit("room:leave", { code: state.code });
+      }
       showLobby();
     });
 
-    dom.btnHowTo && dom.btnHowTo.addEventListener('click', () => {
-      if (dom.modalHowTo) dom.modalHowTo.hidden = false;
-    });
-    dom.btnCloseHowTo && dom.btnCloseHowTo.addEventListener('click', () => {
-      if (dom.modalHowTo) dom.modalHowTo.hidden = true;
-    });
-
-    dom.btnMute && dom.btnMute.addEventListener('click', () => {
-      state.soundOn = !state.soundOn;
-      dom.btnMute.textContent = state.soundOn ? '🔊' : '🔇';
-    });
-
-    // 鍵盤：S = 對自己、E = 對敵人
-    window.addEventListener('keydown', (event) => {
-      if (!state.game || !state.game.public) return;
-      if (event.target && /^(INPUT|SELECT|TEXTAREA)$/.test(event.target.tagName)) return;
-      if (event.repeat) return;
-      if (event.key === 's' || event.key === 'S') dom.btnSelf && dom.btnSelf.click();
-      if (event.key === 'e' || event.key === 'E') dom.btnEnemy && dom.btnEnemy.click();
+    $("startBtn").addEventListener("click", () => {
+      if (!state.socket) return;
+      state.busy = true;
+      state.busyAt = Date.now();
+      state.socket.emit("game:start", {}, (res) => {
+        state.busy = false;
+        if (!res || res.ok !== true) {
+          toast(ERROR_TEXT[res && res.error] || "開局失敗", "error");
+        }
+        renderAll();
+      });
     });
 
-    // 第一次互動時解鎖 WebAudio
-    window.addEventListener('pointerdown', () => audio.unlock(), { once: true });
+    $("btnAgain").addEventListener("click", () => {
+      $("result").hidden = true;
+      if (state.socket) {
+        state.socket.emit("room:rematch", {}, (res) => {
+          if (res && res.ok === false) {
+            toast(res.error === "WAITING_FOR_OTHERS" ? "等其他玩家也按再來一局" : "無法重開");
+          }
+        });
+      }
+    });
 
-    // 魔王圖缺檔 → 顯示霓虹剪影
-    if (dom.demonImg) {
-      const markMissing = () => dom.demon && dom.demon.classList.add('is-missing-art');
-      const markLoaded = () => dom.demon && dom.demon.classList.remove('is-missing-art');
-      dom.demonImg.addEventListener('error', markMissing);
-      dom.demonImg.addEventListener('load', markLoaded);
-      if (dom.demonImg.complete && dom.demonImg.naturalWidth === 0) markMissing();
-    }
+    $("btnLeave").addEventListener("click", () => {
+      $("result").hidden = true;
+      if (state.socket && state.code) {
+        state.socket.emit("room:leave", { code: state.code });
+      }
+      showLobby();
+    });
+
+    // 鍵盤：Q = 對自己、E = 對敵人
+    document.addEventListener("keydown", (event) => {
+      if ($("game").hidden) return;
+      const tag = (event.target && event.target.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (event.key === "q" || event.key === "Q") {
+        if (!$("btnSelf").disabled) $("btnSelf").click();
+      }
+      if (event.key === "e" || event.key === "E") {
+        if (!$("btnEnemy").disabled) $("btnEnemy").click();
+      }
+    });
   }
 
-  /* ========================================================================== */
-  /*  14. 啟動                                                                 */
-  /* ========================================================================== */
+  // ---------------------------------------------------------------- 啟動
   function boot() {
-    bindEvents();
-    setMode('single');
-    showLobby();
+    bindLobby();
+    bindGame();
+    showLobby(true); // 保留 session，重新整理後才認得回原本的座位
+    const session = loadSession();
+    if (session && session.name) {
+      $("nameInput").value = session.name;
+      state.myName = session.name;
+    } else if (!$("nameInput").value) {
+      $("nameInput").value = "賭徒";
+    }
+    armStateWatchdog();
     connect();
-
-    // 先抓一次公開設定，讓大廳規則表即使在 socket 連上之前也有內容
-    fetch('/api/config')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((config) => config && applyConfig(config))
-      .catch(() => {});
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
   } else {
     boot();
   }

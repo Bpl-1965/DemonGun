@@ -1,0 +1,17 @@
+# ============================================================================
+#  惡魔輪盤 Devil Roulette —— Python 依賴清單
+#  安裝：pip install -r requirements.txt
+# ============================================================================
+#  Web 框架與即時通訊
+Flask>=3.0,<4.0
+Flask-SocketIO>=5.3,<6.0
+python-socketio>=5.11,<6.0
+python-engineio>=4.9,<5.0
+
+#  非同步執行環境
+#  eventlet 讓 Socket.IO 可以用協程處理連線；若你的 Python 版本裝不起來，
+#  app.py 會自動退回標準的 threading 模式（功能完全相同，只是併發量較低）。
+eventlet>=0.36
+
+#  threading 模式下要支援 WebSocket 升級需要它（沒裝會退回 long-polling）
+simple-websocket>=1.0
