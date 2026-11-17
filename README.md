@@ -1,5 +1,5 @@
 # 惡魔輪盤 · Devil Roulette
-
+![DeepSeek](public/assets/deepseek_girl.jpg)
 Flask + Flask-SocketIO 的網頁版俄羅斯輪盤，對戰 DeepSeek。
 
 ## 啟動
@@ -18,6 +18,6 @@ devil-roulette-python/
 
 
 
-![DeepSeek](public/assets/deepseek_girl.jpg)
+
 
 just make for school play(my token qwq)
