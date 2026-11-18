@@ -40,7 +40,7 @@
       game.is_ai_turn() -> bool
 
       choose_ai_intent(game) -> {"type": "SHOOT"|"USE_ITEM", "payload": {...}}
-      ai_think_delay(game) -> float                # 秒
+      # AI 每個動作之間由 app.py 固定間隔 1.5~2.2 秒（AI_ACTION_INTERVAL_*）
  ========================================================================== """
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ ASYNC_MODE = "threading"
 
 import os
 import random
+import secrets
 import string
 import sys
 import threading
@@ -67,10 +68,12 @@ for _stream in (sys.stdout, sys.stderr):
 
 from flask import Flask, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from config import game_config
+from config import items as items_module
 from config.game_config import RULES, TIMING
-from logic.game_engine import Game, ai_think_delay, choose_ai_intent
+from logic.game_engine import Game, choose_ai_intent
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PUBLIC_DIR = os.path.join(BASE_DIR, "public")
@@ -79,6 +82,8 @@ PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 #  Flask / Socket.IO
 # ---------------------------------------------------------------------------
 app = Flask(__name__, static_folder=PUBLIC_DIR, static_url_path="")
+# 走 ngrok / cloudflared 等反向代理時，用 X-Forwarded-* 還原真實協定與來源
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.config["SECRET_KEY"] = os.environ.get("DEVIL_SECRET") or os.urandom(24).hex()
 app.config["JSON_AS_ASCII"] = False
 
@@ -105,6 +110,11 @@ ACTION_DEDUPE_MS = int(TIMING.get("ACTION_DEDUPE_MS", 500))
 SEAT_LIMITS = [1, 2, 3, 4]
 MAX_HUMANS = int(RULES.get("MAX_PLAYERS", 4))
 AI_MAX_STEPS_PER_TURN = 8
+# AI 每個動作之間的間隔（秒）：放慢到 1.5~2.2 秒，讓動畫有時間播完
+AI_ACTION_INTERVAL_MIN = 1.5
+AI_ACTION_INTERVAL_MAX = 2.2
+# 本輪打光後的緩衝（毫秒）：讓最後一發的受擊動畫與「誰射了誰」完整呈現
+ROUND_END_PAUSE_MS = 2200
 
 # ---------------------------------------------------------------------------
 #  房況資料
@@ -142,12 +152,17 @@ class Room:
     game: Game | None = None
     # 房主選的人數上限：1 = 單人對 AI（房主 + 自動補的 AI），2~4 = 真實玩家數
     max_players: int = 0
+    # 分享用的入場 token：/room/<code>/<token> 就是可以拿來邀請朋友的網址
+    token: str = field(default_factory=lambda: secrets.token_urlsafe(9))
     created_at: float = field(default_factory=time.time)
     turn_deadline: float = 0.0      # epoch 秒；0 = 目前沒有計時
     reveal_until: float = 0.0       # epoch 秒；前端用來畫進度條
     reveal_ms: int = 0
     generation: int = 0             # 每次開新局 +1，讓舊的計時器自動失效
     empty_since: float = 0.0        # 最後一個人離線的時間（0 = 有人）
+    # 本輪打光後的緩衝：到期時間（epoch 秒）；0 = 沒有緩衝。
+    # 期間前端把動作按鈕鎖住，等最後一發的動畫播完。
+    round_pause_until: float = 0.0
     lock: threading.RLock = field(default_factory=threading.RLock)
 
     # --- 座位查詢 ---------------------------------------------------------
@@ -232,6 +247,11 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _items_version() -> int:
+    """道具表的版本（簽章）：前端比對不同就刷新說明文字。"""
+    return len(items_module.ITEMS)
+
+
 def safe_name(raw: Any, fallback: str) -> str:
     """玩家暱稱：限長度、去控制字元，避免塞爆前端或 log。"""
     text = str(raw or "").strip()
@@ -248,23 +268,32 @@ def cooldown_ok(seat: Seat) -> bool:
     return True
 
 
-def accept_action(seat: Seat, kind: str) -> bool:
-    """防連點 + 防重放的伺服器端閘門。
+def is_duplicate(seat: Seat, kind: str) -> bool:
+    """只檢查、不記錄（供「先驗證、後蓋章」的流程使用）。
 
-    同一種請求（"SHOOT" / "USE_ITEM"）在 ACTION_DEDUPE_MS（預設 0.5 秒）內
-    只認第一次，第二次直接丟掉（回 TOO_FAST），不會執行動作、也不算失誤。
-    前端改 console 或直接重送 socket 封包都繞不過這一關。
+    以前的 accept_action() 是「先蓋章才驗證」，被 AMMO_REVEAL / NOT_YOUR_TURN
+    擋掉的請求也會蓋掉戳記，玩家接著按就被 TOO_FAST 吞掉，
+    看起來像「按了沒反應、卡住」。
     """
+    last = seat.action_stamps.get(kind, 0.0)
+    return (time.time() - last) * 1000 < ACTION_DEDUPE_MS
+
+
+def stamp_action(seat: Seat, kind: str) -> None:
+    """動作真的被接受之後才蓋章（順手清掉一分鐘前的舊戳記）。"""
     now = time.time()
     stamps = seat.action_stamps
-    last = stamps.get(kind, 0.0)
-    if (now - last) * 1000 < ACTION_DEDUPE_MS:
-        return False
-    # 順手把同一輪的舊戳記清掉，避免 dict 無限長大
     for key in [k for k, v in stamps.items() if (now - v) * 1000 > 60_000]:
         stamps.pop(key, None)
     stamps[kind] = now
     seat.last_action_at = now
+
+
+def accept_action(seat: Seat, kind: str) -> bool:
+    """檢查 + 蓋章一次完成（保留給簡單情境使用）。"""
+    if is_duplicate(seat, kind):
+        return False
+    stamp_action(seat, kind)
     return True
 
 
@@ -310,6 +339,11 @@ def redact_action(action: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(action, dict):
         return action
     return {k: v for k, v in action.items() if k not in SECRET_ACTION_KEYS}
+
+
+def round_pause_active(room: Room) -> bool:
+    """本輪打光後的緩衝期間 → 任何動作都擋掉（回 ROUND_PAUSE）。"""
+    return room.round_pause_until > time.time()
 
 
 def broadcast_actions(room: Room, actions: list[dict[str, Any]] | None) -> None:
@@ -359,13 +393,22 @@ def emit_state(room: Room) -> None:
             {
                 "code": room.code,
                 "hostId": room.host_id,
+                "maxPlayers": room.max_players,
+                "humanLimit": room.human_limit,
+                "roomUrl": f"/room/{room.code}/{room.token}",
                 # 每個人都會收到「自己在這場遊戲裡是哪個 id」：
                 # 前端不必再猜，重新整理後也能立刻認回自己的座位。
                 "youId": seat.id,
                 "seats": [s.to_public() for s in room.seats],
                 "game": state,
+                # 道具表隨每次狀態一起送：多人房有人中途加入、或伺服器改過道具後，
+                # 舊分頁也能拿到最新的名稱與說明，不會顯示過期資料。
+                "items": items_module.public_items(),
+                "itemsVersion": _items_version(),
                 "revealUntil": int(room.reveal_until * 1000) if room.reveal_until else 0,
                 "revealMs": room.reveal_ms,
+                # 本輪緩衝：>0 表示「最後一發播動畫中」，前端據此鎖住按鈕
+                "roundPauseUntil": int(room.round_pause_until * 1000) if room.round_pause_until else 0,
                 "serverNow": now_ms(),
                 "turnDeadline": int(room.turn_deadline * 1000) if room.turn_deadline else 0,
             },
@@ -386,6 +429,9 @@ def emit_lobby(room: Room) -> None:
             "humanLimit": room.human_limit,
             "joined": room.joined_humans(),
             "full": room.is_full(),
+            # 分享連結：大廳就能直接顯示給房主複製
+            "roomUrl": f"/room/{room.code}/{room.token}",
+            "token": room.token,
         },
         to=room.code,
     )
@@ -480,9 +526,10 @@ def arm_turn_timer(room: Room) -> None:
             result = game.execute(active_id, "TIMEOUT", {"target_id": None})
         if result.get("ok"):
             room.turn_deadline = 0.0
-            broadcast_actions(room, result.get("actions"))
-            emit_state(room)
-            schedule_after_broadcast(room)
+            if not broadcast_with_round_end_pause(room, result.get("actions")):
+                broadcast_actions(room, result.get("actions"))
+                emit_state(room)
+                schedule_after_broadcast(room, result.get("actions"))
 
     socketio.start_background_task(worker)
 
@@ -503,7 +550,9 @@ def run_ai_loop(room: Room) -> None:
         if active is None or not active.is_ai:
             return
 
-        socketio.sleep(ai_think_delay(game))
+        # 每個動作之間固定等 1.5~2.2 秒，讓前一個動作的動畫播完再進行下一步，
+        # 避免多個動作疊在一起造成畫面卡頓。
+        socketio.sleep(AI_ACTION_INTERVAL_MIN + random.random() * (AI_ACTION_INTERVAL_MAX - AI_ACTION_INTERVAL_MIN))
         with room.lock:
             if room.game is not game or game.phase != "playing":
                 return
@@ -522,6 +571,9 @@ def run_ai_loop(room: Room) -> None:
             if not result.get("ok"):
                 return
 
+        # 若這一步把本輪打光，會切成兩段廣播並緩衝 2.2 秒，AI 迴圈停在這裡
+        if broadcast_with_round_end_pause(room, result.get("actions")):
+            return
         broadcast_actions(room, result.get("actions"))
         emit_state(room)
 
@@ -533,13 +585,94 @@ def _is_dead(game: Game, player_id: str) -> bool:
     return bool(player is None or getattr(player, "dead", False))
 
 
-def schedule_after_broadcast(room: Room) -> None:
+def split_at_round_end(actions: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """把動作串切成「本輪結束前」與「換輪之後」兩段。
+
+    引擎打完最後一發時，會在同一次 execute() 內回傳
+    [SHOT, ROUND_END, RELOAD, AMMO_REVEAL, TURN_CHANGED, ...]。
+    如果整包一起送，玩家會在同一瞬間看到「受擊 → 立刻換輪 + 3 秒揭示」。
+    切成兩段、中間停 2.2 秒，最後一發的「誰射了誰」才看得完整。
+    """
+    if not actions:
+        return [], []
+    for index, action in enumerate(actions):
+        if isinstance(action, dict) and action.get("type") == "ROUND_END":
+            # ROUND_END 本身算「換輪之後」，跟 RELOAD / AMMO_REVEAL 一起延後送
+            return actions[:index], actions[index:]
+    return actions, []
+
+
+def broadcast_with_round_end_pause(room: Room, actions: list[dict[str, Any]] | None) -> bool:
+    """廣播動作串；若含 ROUND_END，就先送前段，緩衝 2.2 秒再送換輪段。
+
+    回傳 True 表示「已排入緩衝」，呼叫端不要再呼叫 schedule_after_broadcast。
+    """
+    game = room.game
+    before, after = split_at_round_end(actions)
+    if not after:
+        return False
+
+    broadcast_actions(room, before)
+    emit_state(room)
+
+    room.turn_deadline = 0.0
+    room.round_pause_until = time.time() + ROUND_END_PAUSE_MS / 1000.0
+    generation = room.generation
+
+    def worker() -> None:
+        socketio.sleep(ROUND_END_PAUSE_MS / 1000.0)
+        if room.generation != generation or room.game is not game:
+            return
+        with room.lock:
+            if room.game is not game:
+                return
+            room.round_pause_until = 0.0
+        # 換輪動作（RELOAD / AMMO_REVEAL / TURN_CHANGED）現在才播
+        broadcast_actions(room, after)
+        emit_state(room)
+        schedule_after_broadcast(room)
+
+    socketio.start_background_task(worker)
+    return True
+
+
+def start_round_end_pause(room: Room) -> bool:
+    """（保留給直接呼叫的舊路徑）純緩衝，不切分動作串。"""
+    game = room.game
+    if game is None:
+        return False
+
+    room.turn_deadline = 0.0
+    # 專用旗標：緩衝期間前端把動作按鈕鎖住（不與真正的裝填鎖混用，
+    # 避免影響下一輪的 3 秒彈藥揭示）
+    room.round_pause_until = time.time() + ROUND_END_PAUSE_MS / 1000.0
+    generation = room.generation
+
+    def worker() -> None:
+        socketio.sleep(ROUND_END_PAUSE_MS / 1000.0)
+        if room.generation != generation or room.game is not game:
+            return
+        with room.lock:
+            if room.game is not game:
+                return
+            room.round_pause_until = 0.0
+        emit_state(room)
+        schedule_after_broadcast(room)
+
+    socketio.start_background_task(worker)
+    return True
+
+
+def schedule_after_broadcast(room: Room, actions: list[dict[str, Any]] | None = None) -> None:
     """
     一次廣播之後該做的事：
       1. 裝填鎖還沒結束 → 等它結束（期間誰都不能動）
       2. 遊戲結束 → 公布最終子彈
       3. 輪到 AI → 排 AI 行動
       4. 輪到人類 → 開回合計時器
+
+    （本輪打光後的 2.2 秒緩衝在 broadcast_with_round_end_pause 處理，
+      它會把動作串切段並延後換輪動作，所以這裡不需要再判斷 ROUND_END。）
     """
     game = room.game
     if game is None:
@@ -561,6 +694,9 @@ def schedule_after_broadcast(room: Room) -> None:
         return
 
     if arm_reveal_timer(room):
+        # 裝填鎖期間沒有回合計時（誰都不能動），但順手把 human turn 的期限清掉，
+        # 免得前端拿著上一輪的舊 deadline 倒數，看起來像「卡住在裝填」。
+        room.turn_deadline = 0.0
         return
 
     # 計時器要在「廣播之後」馬上設好，否則客戶端收到的這份狀態裡 turnDeadline 是舊的（0），
@@ -584,9 +720,26 @@ def index():
     return send_from_directory(PUBLIC_DIR, "index.html")
 
 
+@app.get("/room/<code>/<token>")
+def room_link(code: str, token: str):
+    """分享用的入場網址：/room/<房碼>/<token>。
+
+    一律送同一份 index.html；房碼與 token 由前端從網址解析後自動帶進 room:join，
+    所以朋友點連結就能直接進房。token 錯誤時前端會退回大廳。
+    """
+    return send_from_directory(PUBLIC_DIR, "index.html")
+
+
 @app.get("/api/health")
 def health():
-    return jsonify({"ok": True, "rooms": len(ROOMS), "asyncMode": ASYNC_MODE, "version": game_config.VERSION})
+    return jsonify({
+        "ok": True,
+        "rooms": len(ROOMS),
+        "asyncMode": ASYNC_MODE,
+        "version": game_config.VERSION,
+        "items": len(items_module.ITEMS),
+        "itemProblems": items_module.validate_items() + items_module.validate_loot(),
+    })
 
 
 @app.get("/api/config")
@@ -768,6 +921,9 @@ def on_room_create(data=None):
         "youId": "p1",
         "hostId": room.host_id,
         "maxPlayers": room.max_players,
+        # 分享連結：朋友打開就是 /room/<房碼>/<token>
+        "token": room.token,
+        "roomUrl": f"/room/{code}/{room.token}",
     }
 
 
@@ -905,9 +1061,11 @@ def start_game(room: Room, by_seat: Seat | None) -> dict[str, Any]:
             s.ready = False
 
     broadcast_actions(room, actions)
-    emit_state(room)
     emit_lobby(room)
+    # 先把回合計時 / AI 排程準備好，emit_state 補推的那份才會帶正確的 turnDeadline。
+    # （原本先 emit_state 才排程，第一份狀態的 turnDeadline 是 0，前端沒有倒數。）
     schedule_after_broadcast(room)
+    emit_state(room)
     return {"ok": True}
 
 
@@ -981,8 +1139,12 @@ def on_shoot(data=None):
     if seat.is_ai:
         return {"ok": False, "error": "NOT_A_PLAYER"}
 
-    # ── 防作弊 2：0.5 秒內的第二發直接忽略（不執行、不回動作） ──
-    if not accept_action(seat, "SHOOT"):
+    # ── 本輪打光後的緩衝期間一律擋掉（讓最後一發的動畫播完） ──
+    if round_pause_active(room):
+        return {"ok": False, "error": "ROUND_PAUSE"}
+
+    # ── 防作弊 2：0.5 秒內的第二發直接忽略（只檢查，成功後才蓋章） ──
+    if is_duplicate(seat, "SHOOT"):
         return {"ok": False, "error": "TOO_FAST"}
 
     # ── 防作弊 3：目標只接受「房間裡存在且活著的人」，其餘一律當成打自己 ──
@@ -990,14 +1152,18 @@ def on_shoot(data=None):
 
     with room.lock:
         result = game.execute(seat.id, "SHOOT", {"target_id": target_id})
+        if result.get("ok"):
+            stamp_action(seat, "SHOOT")
 
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error", "UNKNOWN")}
 
     room.turn_deadline = 0.0
-    broadcast_actions(room, result.get("actions"))
-    emit_state(room)
-    schedule_after_broadcast(room)
+    # 若這批動作打光了本輪，會切成兩段廣播並緩衝 2.2 秒（讓最後一發看得完整）
+    if not broadcast_with_round_end_pause(room, result.get("actions")):
+        broadcast_actions(room, result.get("actions"))
+        emit_state(room)
+        schedule_after_broadcast(room, result.get("actions"))
     return {"ok": True}
 
 
@@ -1017,7 +1183,10 @@ def on_use_item(data=None):
     if seat.is_ai:
         return {"ok": False, "error": "NOT_A_PLAYER"}
 
-    if not accept_action(seat, "USE_ITEM"):
+    if round_pause_active(room):
+        return {"ok": False, "error": "ROUND_PAUSE"}
+
+    if is_duplicate(seat, "USE_ITEM"):
         return {"ok": False, "error": "TOO_FAST"}
 
     raw_item = payload_in.get("itemId", payload_in.get("item_id"))
@@ -1034,14 +1203,18 @@ def on_use_item(data=None):
 
     with room.lock:
         result = game.execute(seat.id, "USE_ITEM", payload)
+        if result.get("ok"):
+            stamp_action(seat, "USE_ITEM")
 
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error", "UNKNOWN")}
 
     room.turn_deadline = 0.0
-    broadcast_actions(room, result.get("actions"))
-    emit_state(room)
-    schedule_after_broadcast(room)
+    # 若這批動作打光了本輪，會切成兩段廣播並緩衝 2.2 秒（讓最後一發看得完整）
+    if not broadcast_with_round_end_pause(room, result.get("actions")):
+        broadcast_actions(room, result.get("actions"))
+        emit_state(room)
+        schedule_after_broadcast(room, result.get("actions"))
     return {"ok": True}
 
 
@@ -1058,6 +1231,15 @@ def main() -> None:
     print(f"  網址      : http://localhost:{port}")
     if game_config.APPLIED_ENV_OVERRIDES:
         print(f"  環境覆寫  : {', '.join(game_config.APPLIED_ENV_OVERRIDES)}")
+    # 開機時自動檢查 config/items.py：有問題就印出來，但不影響啟動
+    problems = items_module.validate_items() + items_module.validate_loot()
+    print(f"  道具      : {len(items_module.ITEMS)} 件", end="")
+    if problems:
+        print(f"（{len(problems)} 個問題，詳見下方）")
+        for problem in problems:
+            print(f"    ! {problem}")
+    else:
+        print("（清單檢查通過）")
     print("=" * 62)
     socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
 

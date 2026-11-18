@@ -18,6 +18,7 @@
     NOT_ENOUGH_PLAYERS: "人數不足，無法開局。",
     NOT_YOUR_TURN: "還沒輪到你。",
     AMMO_REVEAL: "還在公布裝填結果，稍等一下。",
+    ROUND_PAUSE: "本輪剛結束，稍等一下就換你。",
     GAME_NOT_PLAYING: "遊戲還沒開始或已經結束。",
     PLAYER_DEAD: "你已經出局了。",
     TOO_FAST: "手速太快了，慢一點。",
@@ -37,6 +38,7 @@
     config: null,
     code: null,
     hostId: null,
+    roomUrl: null, // 分享連結（/room/<code>/<token>），由伺服器提供
     youId: null,
     myName: null,
     seats: [],
@@ -52,6 +54,12 @@
     serverTurnTimeout: 0, // 伺服器設的回合秒數（拿來算初始數字）
     turnTimerId: null,
     revealTimer: null,
+    // 本輪打光後的緩衝（伺服器時間軸 ms）：期間按鈕鎖住，讓最後一發的動畫播完
+    roundPauseUntil: 0,
+    // 道具兩段式操作：第一次點擊只選中並顯示說明，第二次才真的使用
+    armedItem: null,
+    armedItemAt: 0,
+    lastTurnKey: "none", // 用來偵測回合 / 輪次變化，變化時清除道具鎖定
     queue: Promise.resolve(),
   };
 
@@ -100,6 +108,8 @@
     return Boolean(p && p.phase === "playing" && p.activeId === state.youId);
   };
   const revealActive = () => state.revealUntil > Date.now() + state.serverOffset;
+  // 本輪打光後的緩衝（伺服器會在這段時間鎖住按鈕，讓最後一發的動畫播完）
+  const roundPauseActive = () => state.roundPauseUntil > Date.now() + state.serverOffset;
 
   // ---------------------------------------------------------------- 畫面切換
   function setMessage(text, kind) {
@@ -197,6 +207,17 @@
       : state.seats.filter((s) => s.id !== state.youId).map((s) => ({ id: s.id, name: s.name, hp: 0, maxHp: 0, dead: false, itemCount: 0, ready: s.ready }));
 
     box.style.setProperty("--n", String(Math.max(1, Math.min(3, list.length))));
+
+    // 只有「對手名單 / 血量 / 回合 / 死亡 / 選中」真的變了才重建 DOM。
+    // 每輪換彈時只要血量沒變就不重建，避免重複產生節點與事件監聽器。
+    const sig = JSON.stringify([
+      list.map((f) => [f.id, f.name, f.hp, f.maxHp, f.dead, f.itemCount]),
+      p ? p.activeId : null,
+      state.selectedTarget,
+    ]);
+    if (box.dataset.sig === sig) return;
+    box.dataset.sig = sig;
+
     box.innerHTML = "";
 
     if (!list.length) {
@@ -451,41 +472,198 @@
       .replace(/"/g, "&quot;");
   }
 
+  // ---------------------------------------------------------------- 道具（兩段式操作）
+  // 第一次點擊＝選中並顯示說明；第二次點擊同一格（或 Tooltip 的「使用」）才真的送 game:item。
+  // 觸控裝置沒有 hover，這個機制讓玩家能先看清楚再決定，也避免誤觸。
+
+  // 小工具：有些極簡 DOM 環境（或舊瀏覽器）沒有 setAttribute，避免直接炸掉
+  function setAttr(node, name, value) {
+    if (node && typeof node.setAttribute === "function") node.setAttribute(name, value);
+  }
+
+  function armItem(item, wasted) {
+    state.armedItem = item ? item.id : null;
+    state.armedItemAt = Date.now();
+    const grid = $("itemsGrid");
+    if (grid) {
+      Array.prototype.forEach.call(grid.querySelectorAll(".slot"), (node) => {
+        const on = item && node.dataset && node.dataset.itemId === item.id;
+        node.classList.toggle("is-armed", Boolean(on));
+        setAttr(node, "aria-pressed", on ? "true" : "false");
+      });
+    }
+    if (item) openItemCard(item, wasted);
+    else closeItemCard();
+  }
+
+  function disarmItem() {
+    // 不管 armedItem 是否為 null 都清一次 DOM，
+    // 避免狀態與畫面不同步時留下殘留的選中框或說明卡。
+    state.armedItem = null;
+    state.armedItemAt = 0;
+    const grid = $("itemsGrid");
+    if (grid) {
+      Array.prototype.forEach.call(grid.querySelectorAll(".slot.is-armed"), (node) => {
+        node.classList.remove("is-armed");
+        setAttr(node, "aria-pressed", "false");
+      });
+    }
+    closeItemCard();
+  }
+
+  /** 固定在道具欄上方（手機）或賭桌中央的說明卡 */
+  function openItemCard(item, wasted) {
+    const card = $("itemCard");
+    if (!card) return;
+    const effect = itemEffect(item.id);
+    const chance = item.params && item.params.CHANCE;
+    let chanceText = "";
+    if (typeof chance !== "undefined") {
+      let pct = Number(chance);
+      if (isNaN(pct)) pct = 100;
+      else if (pct <= 1) pct = pct * 100;
+      chanceText = '<span class="item-card__chance">成功率 ' + Math.round(pct) + "%</span>";
+    }
+    card.innerHTML =
+      '<div class="item-card__head">' +
+      '<span class="item-card__icon">' + esc(item.icon || "❓") + "</span>" +
+      '<span class="item-card__name">' + esc(item.name) + "</span>" +
+      chanceText +
+      "</div>" +
+      '<p class="item-card__desc">' + esc(item.desc || "") + "</p>" +
+      (wasted ? '<p class="item-card__warn">生命值已滿，現在用會浪費</p>' : "") +
+      '<button type="button" class="item-card__use" data-use="' + esc(item.id) + '">使用</button>' +
+      '<p class="item-card__hint">再點一次道具即可使用</p>';
+    card.hidden = false;
+    card.classList.add("is-open");
+
+    const useBtn = card.querySelector(".item-card__use");
+    if (useBtn) {
+      useBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (useBtn.disabled) return;
+        // 說明卡可能停留在畫面上，按下去時再確認一次輪次與裝填鎖
+        if (!isMyTurn() || revealActive()) {
+          disarmItem();
+          return;
+        }
+        const id = item.id;
+        disarmItem();
+        useItem(id);
+      });
+    }
+  }
+
+  function closeItemCard() {
+    const card = $("itemCard");
+    if (!card) return;
+    card.classList.remove("is-open");
+    card.hidden = true;
+    card.innerHTML = "";
+  }
+
   function renderItems() {
     const grid = $("itemsGrid");
+    if (!grid) return;
     const items = (priv() && priv().items) || [];
-    const canUse = pub() && pub().phase === "playing";
     const me = myPlayer();
-    const hpFull = Boolean(me && !me.dead && me.hp >= me.maxHp);
+    const p = pub();
+
+    // ── 道具可用的必要條件（全部成立才解鎖）──
+    //   1. 遊戲進行中
+    //   2. 不是裝填揭曉鎖定期
+    //   3. 現在是我的回合
+    //   4. 我還活著
+    //   5. 這一回合使用道具數還沒到上限
+    // ⚠ 不能用 || 3：設定值 0 代表「不限」，但 0 是 falsy 會被誤判成 3。
+    const rawMax =
+      state.config && state.config.LIMITS && typeof state.config.LIMITS.MAX_ITEMS_PER_TURN === "number"
+        ? state.config.LIMITS.MAX_ITEMS_PER_TURN
+        : 3;
+    const maxPerTurn = Number(rawMax);
+    const usedThisTurn = Number((priv() && priv().itemsThisTurn) || 0);
+    const revealLocked = revealActive();
+    const myTurnNow = isMyTurn();
+    const alive = Boolean(me && !me.dead);
+    // maxPerTurn <= 0 → 不限次數
+    const itemBudgetLeft = maxPerTurn <= 0 || usedThisTurn < maxPerTurn;
+    const canUse =
+      Boolean(p) && p.phase === "playing" && !revealLocked && !roundPauseActive() && myTurnNow && alive && itemBudgetLeft;
+    const hpFull = Boolean(alive && me.hp >= me.maxHp);
+
+    // ── 跨回合清除：只要不是我的回合 / 正在裝填 / 道具已消失，就取消鎖定 ──
+    if (
+      state.armedItem &&
+      (!canUse || !items.some((it) => it.id === state.armedItem))
+    ) {
+      disarmItem();
+    }
+
+    // 內容沒變就不重建 DOM，避免每幀重繪造成卡頓
+    const sig =
+      items.map((it) => it.id).join("|") +
+      "#" + (canUse ? 1 : 0) +
+      (hpFull ? 1 : 0) +
+      "#" + (myTurnNow ? 1 : 0) +
+      (revealLocked ? 1 : 0) +
+      usedThisTurn;
+    if (grid.dataset.sig === sig) return;
+    grid.dataset.sig = sig;
     grid.innerHTML = "";
 
     items.forEach((item) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "slot";
+      btn.dataset.itemId = item.id;
+      setAttr(btn, "aria-pressed", "false");
       // 純回血道具在滿血時沒有意義：直接鎖住，不讓玩家白花一個道具
       const effect = itemEffect(item.id);
       const wasted = hpFull && (effect === "heal" || effect === "random_heal");
       btn.disabled = !canUse || wasted;
       btn.title = wasted ? "生命值已滿，現在用會浪費。" : item.desc || "";
       if (wasted) btn.classList.add("slot--waste");
+      if (state.armedItem === item.id) btn.classList.add("is-armed");
       btn.innerHTML =
         '<span class="slot__icon">' +
         (item.icon || "❓") +
         '</span><span class="slot__name">' +
         item.name +
         "</span>";
-      btn.addEventListener("click", () => useItem(item.id));
-      // 懸停說明：mouseenter 填內容、mousemove 跟著滑鼠跑、mouseleave 收起來
-      btn.addEventListener("mouseenter", (event) => tooltip.show(event, item, wasted));
-      btn.addEventListener("mousemove", (event) => tooltip.move(event));
+
+      // 兩段式：第一下選中，第二下才使用。
+      // 點擊當下再驗一次：不是我的回合 / 裝填中 / 已用滿 → 直接忽略，不進入鎖定狀態。
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (btn.disabled) return;
+        if (!isMyTurn() || revealActive()) {
+          disarmItem();
+          return;
+        }
+        if (state.armedItem === item.id) {
+          disarmItem();
+          useItem(item.id);
+        } else {
+          armItem(item, wasted);
+        }
+      });
+
+      // 滑鼠 hover 仍保留原本的浮動提示（觸控裝置沒有 hover，不受影響）
+      btn.addEventListener("mouseenter", (event) => {
+        if (state.armedItem) return; // 已經選中時以說明卡為準
+        tooltip.show(event, item, wasted);
+      });
+      btn.addEventListener("mousemove", (event) => {
+        if (state.armedItem) return;
+        tooltip.move(event);
+      });
       btn.addEventListener("mouseleave", () => tooltip.hide());
-      // 手機沒有 hover：點完順手收掉
-      btn.addEventListener("click", () => tooltip.hide());
       grid.appendChild(btn);
     });
 
-    const empty = Math.max(0, 3 - items.length);
+    // 空格補到 MAX_ITEMS（設定裡的道具欄位數），不要硬寫 3
+    const slots = (state.config && state.config.LIMITS && state.config.LIMITS.MAX_ITEMS) || 8;
+    const empty = Math.max(0, slots - items.length);
     for (let i = 0; i < empty; i += 1) {
       const slot = document.createElement("div");
       slot.className = "slot slot--empty";
@@ -501,7 +679,8 @@
       state.busy = false;
     }
 
-    const isLocked = revealActive(); // revealActive() 會自動判斷伺服器時間
+    // revealActive() / roundPauseActive() 都會自動換算伺服器時間
+    const isLocked = revealActive() || roundPauseActive();
     const canAct =
       Boolean(p) && p.phase === "playing" && p.activeId === state.youId && !isLocked && !state.busy;
 
@@ -612,8 +791,12 @@
       case "RELOAD":
         $("roundLabel").textContent = action.round ?? "1";
         flashGun("blank");
+        // 換輪：取消任何道具鎖定，避免上一輪的選中框留到新的一輪
+        disarmItem();
         break;
       case "AMMO_REVEAL":
+        // 進入裝填揭曉 → 立刻解除道具鎖定並收起說明卡
+        disarmItem();
         showReveal({
           round: action.round,
           live: action.live,
@@ -665,7 +848,7 @@
   // ---------------------------------------------------------------- 送意圖
   function shoot(targetId) {
     if (!state.socket || state.busy) return;
-    if (revealActive()) return;
+    if (revealActive() || roundPauseActive()) return;
     state.busy = true;
     state.busyAt = Date.now();
     renderButtons();
@@ -689,7 +872,12 @@
 
   function useItem(itemId) {
     if (!state.socket || state.busy) return;
-    if (revealActive()) return;
+    // 最後一道防線：不是我的回合、裝填中、或本輪緩衝期間就不送（後端同樣會擋）
+    if (!isMyTurn() || revealActive() || roundPauseActive()) {
+      disarmItem();
+      return;
+    }
+    disarmItem();
     state.busy = true;
     state.busyAt = Date.now();
     renderButtons();
@@ -756,8 +944,10 @@
   }
 
   // 保險：真的沒收到 room:update 時，主動再要一次狀態（最多 3 次）
+  // ⚠ 只建立一次常駐計時器。之前每次收到 room:update 都 clear + 重設一次，
+  //    等於每輪都重新建立 setInterval，換幾輪之後就會累積一堆計時器造成卡頓。
   function armStateWatchdog() {
-    if (watchdog) window.clearInterval(watchdog);
+    if (watchdog) return; // 已經在跑就不要重建
     watchdog = window.setInterval(() => {
       const session = loadSession();
       if (!session || !session.ingame) return;
@@ -776,6 +966,8 @@
       setMessage("已連上伺服器。", "ok");
       // 重新整理 / 斷線重連：拿存下來的房碼與名字把座位認回來
       tryRejoin();
+      // 用分享連結進來的人：連上後自動加入那間房
+      joinFromLink();
     });
 
     socket.on("disconnect", () => {
@@ -792,9 +984,16 @@
       state.busyAt = 0;
       state.code = payload.code || state.code;
       state.hostId = payload.hostId || state.hostId;
+      if (payload.roomUrl) state.roomUrl = payload.roomUrl;
       // 伺服器直接告訴我們「你是哪個 id」，不必再靠建房時的 ack 猜
       if (payload.youId) state.youId = payload.youId;
       state.seats = payload.seats || [];
+      // 伺服器每次都會帶最新道具表：中途加入或伺服器改過道具時，說明文字不會過期
+      if (Array.isArray(payload.items) && state.config) {
+        if (!state.config.ITEMS || state.config.ITEMS.length !== payload.items.length) {
+          state.config = Object.assign({}, state.config, { ITEMS: payload.items });
+        }
+      }
       // 伺服器說「沒有進行中的遊戲」就真的清掉，免得重開房後還畫著上一局的殘影
       state.game = payload.game || { public: null, private: null };
 
@@ -803,8 +1002,23 @@
       }
       state.revealUntil = payload.revealUntil || 0;
       state.revealMs = payload.revealMs || 0;
+      state.roundPauseUntil = payload.roundPauseUntil || 0;
       state.turnDeadline = payload.turnDeadline || 0;
       syncTurnTimer();
+
+      // ── 跨回合 / 換輪清除道具鎖定 ──
+      // 回合換人、換輪、進入裝填、遊戲結束 → 一律取消選中並收起說明卡，
+      // 避免上一回合的燙金選中框與浮動卡片殘留到下一輪。
+      const nowPub = pub();
+      const turnKey =
+        nowPub ? nowPub.phase + "|" + (nowPub.activeId || "") + "|" + (nowPub.round || 0) : "none";
+      if (state.lastTurnKey !== turnKey) {
+        state.lastTurnKey = turnKey;
+        if (state.armedItem) disarmItem();
+      }
+      if (state.revealUntil > Date.now() + state.serverOffset && state.armedItem) {
+        disarmItem();
+      }
 
       if (pub()) showGame();
       renderAll();
@@ -853,6 +1067,7 @@
       state.seats = payload.seats || [];
       state.hostId = payload.hostId || state.hostId;
       state.lobbyMax = payload.maxPlayers || state.lobbyMax;
+      if (payload.roomUrl) state.roomUrl = payload.roomUrl;
       renderLobbyPlayers(payload);
       if (!payload.inGame) renderAll();
     });
@@ -878,6 +1093,19 @@
       "人數 " + joined + " / " + limit + (limit === 1 ? "（單人對 AI）" : "") +
       (full ? "・房間已滿" : "") +
       (names.length ? "　" + names.join("、") : "");
+
+    // 分享連結：給房主複製，朋友打開就是 /room/<房碼>/<token>
+    const share = $("roomShare");
+    if (share) {
+      const url = payload.roomUrl ? window.location.origin + payload.roomUrl : state.roomUrl;
+      if (url) {
+        share.hidden = false;
+        share.textContent = "邀請連結： " + url + "（點一下複製）";
+        share.dataset.url = url;
+      } else {
+        share.hidden = true;
+      }
+    }
   }
 
   // ---------------------------------------------------------------- 結算
@@ -941,9 +1169,20 @@
         state.lobbyMax = res.maxPlayers || maxPlayers;
         state.youId = res.youId;
         state.myName = name;
+        state.roomUrl = res.roomUrl || roomShareUrl(res.code, res.token);
+        // 把網址換成分享連結，複製瀏覽器網址列就是邀請連結
+        if (state.roomUrl) {
+          try {
+            if (window.history && window.history.replaceState) {
+              window.history.replaceState({}, "", state.roomUrl);
+            }
+          } catch (err) {
+            /* 舊瀏覽器忽略 */
+          }
+        }
         saveSession({ code: res.code, name: name, ingame: false });
         showGame();
-        setMessage("房間已建立，房碼 " + res.code + "（把房碼給朋友，按開局開始）", "ok");
+        setMessage("房間已建立，房碼 " + res.code + "（把連結給朋友，按開局開始）", "ok");
         renderAll();
       });
     });
@@ -978,6 +1217,21 @@
     $("codeInput").addEventListener("keydown", (event) => {
       if (event.key === "Enter") $("btnJoin").click();
     });
+
+    // 點邀請連結文字即複製到剪貼簿
+    const share = $("roomShare");
+    if (share) {
+      share.addEventListener("click", () => {
+        const url = share.dataset.url || "";
+        if (!url) return;
+        const done = () => setMessage("已複製邀請連結 ✅", "ok");
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url).then(done, () => setMessage("複製失敗，請手動選取", "error"));
+        } else {
+          setMessage("請手動複製：" + url);
+        }
+      });
+    }
   }
 
   function bindGame() {
@@ -1055,7 +1309,82 @@
       if (event.key === "e" || event.key === "E") {
         if (!$("btnEnemy").disabled) $("btnEnemy").click();
       }
+      if (event.key === "Escape") disarmItem();
     });
+
+    // 點空白處（不是道具格、也不是說明卡）就取消選中並收起說明卡
+    document.addEventListener("click", (event) => {
+      if (!state.armedItem) return;
+      const target = event.target;
+      if (!target || typeof target.closest !== "function") return;
+      if (target.closest(".slot") || target.closest("#itemCard")) return;
+      disarmItem();
+    });
+  }
+
+  // ---------------------------------------------------------------- 分享連結
+  // 網址格式：/room/<房碼>/<token>
+  // 朋友點連結就能直接進房；token 只是讓連結不好猜，真正的身分仍由 socket 決定。
+  function parseRoomLink() {
+    const loc = window.location || {};
+    const m = String(loc.pathname || "").match(/^\/room\/([^/]+)\/([^/]+)\/?$/);
+    if (!m) return null;
+    try {
+      return { code: decodeURIComponent(m[1]).toUpperCase(), token: decodeURIComponent(m[2]) };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // 房間被刪掉或 token 不對時，把網址還原成首頁，免得重整後又卡在同一個壞連結
+  function clearRoomLink() {
+    if (!parseRoomLink()) return;
+    try {
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState({}, "", "/");
+      }
+    } catch (err) {
+      /* 舊瀏覽器忽略 */
+    }
+  }
+
+  // 連上伺服器後，若網址帶著房碼就自動加入（避免使用者還要手動輸入）
+  function joinFromLink() {
+    const link = parseRoomLink();
+    const socket = state.socket;
+    if (!link || !socket) return;
+    if (state.code === link.code && pub()) return; // 已經在這間房了
+
+    $("codeInput").value = link.code;
+    if (!state.myName) {
+      const value = ($("nameInput").value || "").trim();
+      state.myName = value || "賭徒" + Math.floor(Math.random() * 900 + 100);
+      $("nameInput").value = state.myName;
+    }
+    setMessage("正在加入房間 " + link.code + "…");
+
+    socket.emit("room:join", { code: link.code, name: state.myName }, (res) => {
+      if (!res || res.ok !== true) {
+        const error = (res && res.error) || "JOIN_FAILED";
+        setMessage(ERROR_TEXT[error] || "無法加入房間", "error");
+        clearRoomLink();
+        return;
+      }
+      state.code = res.code;
+      state.youId = res.youId;
+      state.hostId = res.hostId || state.hostId;
+      saveSession({ code: res.code, name: state.myName, ingame: false });
+      showGame();
+      setMessage("已加入房間 " + res.code, "ok");
+      renderAll();
+    });
+  }
+
+  // 房主複製分享連結用（大廳顯示的房碼也可以點）
+  function roomShareUrl(code, token) {
+    const origin = (window.location && window.location.origin) || "";
+    if (!code || !token) return "";
+    return origin + "/room/" + encodeURIComponent(code) + "/" + encodeURIComponent(token);
   }
 
   // ---------------------------------------------------------------- 啟動
@@ -1070,6 +1399,9 @@
     } else if (!$("nameInput").value) {
       $("nameInput").value = "賭徒";
     }
+    // 網址帶著房碼時先把房碼填好，連線後會自動加入
+    const link = parseRoomLink();
+    if (link) $("codeInput").value = link.code;
     armStateWatchdog();
     connect();
   }

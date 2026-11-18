@@ -129,6 +129,9 @@ LIMITS: dict[str, Any] = {
     "MAX_ITEMS": 8,               # 道具欄位數（前端顯示 8 格）
     "MAX_ACTIVE_MODIFIERS": 3,    # 同時存在的增益狀態上限
     "BARRAGE_WINDOW_MS": 2000,    # 連發道具的動畫視窗
+    # 每個回合最多用幾件道具（0 = 不限制，想用幾個就用幾個）。
+    # 注意：道具欄本身上限是 MAX_ITEMS，所以「不限」實際上就是把手上的用完為止。
+    "MAX_ITEMS_PER_TURN": 0,
 
     # 同種道具最多帶幾個（原版規則：香菸最多 2 支，滿了就從獎池裡移除）
     "ITEM_CAPS": {

@@ -41,6 +41,7 @@ from typing import Any, Callable
 
 from config import items as items_module
 from logic import dialogue
+from logic.effects import EFFECTS, roll_chance
 
 # ---------------------------------------------------------------------------
 #  常數
@@ -58,6 +59,10 @@ LOG_LIMIT = 40
 
 # 這些道具的效果本身就代表「這一回合的動作結束了」，不額外再送一次 TURN_CHANGED
 NO_TURN_COST_EFFECTS = {"extra_turn"}
+
+# 這些效果「自己就懂 CHANCE」：機率失敗有專屬後果（例如賭博型回血會扣血），
+# 所以不要在引擎入口先擲一次，交給效果函式自己處理。
+CHANCE_SELF_EFFECTS = frozenset({"random_heal", "gamble_heal", "extra_turn"})
 
 # execute() 只接受這幾種意圖；其他字串一律 UNKNOWN_INTENT
 LEGAL_INTENTS = frozenset({"SHOOT", "USE_ITEM", "GUARD", "TIMEOUT"})
@@ -109,6 +114,7 @@ class Player:
     nails: int = 0           # 釘槍：接下來 N 發造成 nail_damage
     nail_damage: int = 2
     skips: int = 0           # 手銬：被跳過的回合數
+    sawn_bonus: int = 1      # 手鋸：下一發額外加的傷害（來自道具 params.DAMAGE）
 
     # 每回合的節流
     items_this_turn: int = 0
@@ -327,6 +333,7 @@ class Game:
             p.items = []
             p.intel = []
             p.sawn_off = 0
+            p.sawn_bonus = 1
             p.nails = 0
             p.skips = 0
             p.items_this_turn = 0
@@ -364,6 +371,7 @@ class Game:
         # 每輪重置的增益（原版：換彈時槍管長回去、手銬在這一輪開始前解除）
         for p in self.players:
             p.sawn_off = 0
+            p.sawn_bonus = 1
             p.nails = 0
             p.intel = []
             p.skips = 0
@@ -459,7 +467,7 @@ class Game:
         # 傷害計算（手鋸 / 釘槍都是「這名玩家」自己的增益）
         power = BASE_DAMAGE
         if shooter.sawn_off > 0:
-            power += 1
+            power += max(1, int(shooter.sawn_bonus or 1))   # 手鋸的加傷由道具 params 決定
             shooter.sawn_off -= 1
         if shooter.nails > 0:
             power = max(power, shooter.nail_damage)
@@ -501,10 +509,13 @@ class Game:
             "lastShell": len(self.chamber) == 0,
         }
 
+        # 明確寫出「誰射了誰」：對自己就寫「自己」，不重複名字
+        who = shooter.name
+        whom = "自己" if target.id == shooter.id else target.name
         if real:
-            self._log("shot", f"{shooter.name} 對 {target.name} 開槍：實彈，{damage} 點傷害。")
+            self._log("shot", f"{who} 對 {whom} 開槍：實彈，{damage} 點傷害。")
         else:
-            self._log("shot", f"{shooter.name} 對 {target.name} 開槍：空包彈。")
+            self._log("shot", f"{who} 對 {whom} 開槍：空包彈。")
 
         return action
 
@@ -715,7 +726,9 @@ class Game:
             return {"ok": False, "error": "UNKNOWN_ITEM"}
         if item_id not in player.items:
             return {"ok": False, "error": "NO_ITEM"}
-        if player.items_this_turn >= MAX_ITEMS_PER_TURN:
+        # 每回合道具上限：0 = 不限次數（想用幾個就用幾個）
+        per_turn_limit = self.max_items_per_turn()
+        if per_turn_limit > 0 and player.items_this_turn >= per_turn_limit:
             return {"ok": False, "error": "TOO_MANY_ITEMS"}
         if self._heal_blocked(player, item):
             return {"ok": False, "error": "HP_FULL"}
@@ -801,158 +814,39 @@ class Game:
     def _apply_item(
         self, player: Player, item: dict[str, Any], target: Player | None
     ) -> tuple[list[dict[str, Any]], bool]:
-        """回傳 (動作串, 是否保留回合)。資料驅動的通用處理器。"""
-        actions: list[dict[str, Any]] = []
+        """依 item["effect"] 查註冊表執行；回傳 (動作串, 是否保留回合)。
+
+        加新效果 = 在 effects.py 寫一個函式 + @EFFECTS.register("名字")，
+        不用改這裡。查不到就回 ITEM_FAILED: unsupported（道具仍會消耗）。
+        """
         effect = item.get("effect")
+        handler = EFFECTS.get(effect)
+        if handler is None:
+            return (
+                [{"type": "ITEM_FAILED", "playerId": player.id, "itemId": item["id"], "reason": "unsupported"}],
+                False,
+            )
+
+        # 道具可以自帶 CHANCE（寫在它自己的 params 裡）：
+        #   沒寫 = 一定生效；寫了 = 先擲機率，沒過就回 ITEM_FAILED，道具照樣消耗。
         params = item.get("params") or {}
-        extends = False
+        chance_used = "CHANCE" in params and effect not in CHANCE_SELF_EFFECTS
+        if chance_used and not roll_chance(self, params, 100):
+            return (
+                [{"type": "ITEM_FAILED", "playerId": player.id, "itemId": item["id"], "reason": "no_effect"}],
+                False,
+            )
 
-        # ==========================================
-        # 👇 通用數值修改類 (只要在 items.py 改數字就能生效)
-        # ==========================================
-        
-        if effect == "deal_damage":
-            dmg = int(params.get("DAMAGE", 1))
-            victim = target or self._default_opponent(player)
-            if victim and not victim.dead:
-                victim.hp = max(0, victim.hp - dmg)
-                if victim.hp <= 0: victim.dead = True
-                actions.append({"type": "DAMAGE", "playerId": victim.id, "amount": dmg, "hp": victim.hp, "dead": victim.dead})
-                self._log("damage", f"{player.name} 對 {victim.name} 造成了 {dmg} 點傷害。")
-
-        elif effect == "heal":
-            if "HP" in params:
-                amount = int(params["HP"])
-            else:
-                amount = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
-            healed = self._heal(player, amount)
-            if healed:
-                actions.append(healed)
-                self._log("heal", f"{player.name} 回復 {healed['amount']} 點生命。")
-
-        elif effect == "max_hp_up":
-            cost = int(params.get("HP", 1))
-            gain = int(params.get("MAX_HP", 1))
-            player.hp = max(1, player.hp - cost)
-            player.max_hp = min(int(self.config["HP"]["MAX_HP"]), player.max_hp + gain)
-            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "max_hp", "hp": player.hp, "maxHp": player.max_hp})
-
-        elif effect == "skip_next":
-            victim = target or self._default_opponent(player)
-            if victim:
-                victim.skips += int(params.get("SKIPS", 1))
-                actions.append({"type": "MODIFIER", "playerId": player.id, "targetId": victim.id, "kind": "cuffed", "skips": victim.skips})
-
-        elif effect == "cut_barrel":
-            player.sawn_off += 1
-            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "sawn", "power": 1 + player.sawn_off})
-            self._log("modifier", f"{player.name} 鋸短了槍管，下一發更痛。")
-
-        elif effect == "nail_gun":
-            player.nails = int(params.get("SHOTS", 3))
-            player.nail_damage = int(params.get("DAMAGE", 2))
-            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "nails", "shots": player.nails, "damage": player.nail_damage})
-
-        elif effect == "steal_turn":
-            extends = True
-            actions.append({"type": "STEAL_TURN", "playerId": player.id, "targetId": (target or self._default_opponent(player) or player).id})
-
-        elif effect == "extra_turn":
-            chance = float(params.get("CHANCE", 100)) / 100.0
-            if self.rng.random() < chance:
-                extends = True
-                actions.append({"type": "EXTRA_TURN", "playerId": player.id, "granted": True})
-            else:
-                actions.append({"type": "EXTRA_TURN", "playerId": player.id, "granted": False})
-
-        # ==========================================
-        # 👇 特殊邏輯類 (因為太複雜，保留專屬處理)
-        # ==========================================
-
-        elif effect == "random_heal":
-            if self.rng.random() < float(params.get("CHANCE", 50)) / 100.0:
-                amount = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
-                healed = self._heal(player, amount)
-                if healed: actions.append(healed)
-            else:
-                actions.append({"type": "ITEM_FAILED", "playerId": player.id, "itemId": item["id"], "reason": "no_effect"})
-
-        elif effect in {"peek", "peek_many", "memory", "memory_all"}:
-            count = int(params.get("COUNT", 1)) if effect != "peek" else 1
-            peek = self._peek(player, count)
-            if peek: actions.append(peek)
-
-        elif effect == "peek_and_hurt":
-            count = int(params.get("COUNT", 3))
-            dmg = int(params.get("DAMAGE", 1))
-            peek = self._peek(player, count)
-            if peek: actions.append(peek)
-            player.hp = max(0, player.hp - dmg)
-            if player.hp <= 0: player.dead = True
-            actions.append({"type": "DAMAGE", "playerId": player.id, "amount": dmg, "hp": player.hp, "dead": player.dead})
-
-        elif effect == "eject":
-            if self.chamber:
-                shell = self.chamber.pop(0)
-                self._sync_counts()
-                for p in self.players:
-                    if p.intel: p.intel.pop(0)
-                actions.append({"type": "EJECT", "playerId": player.id, "shell": shell, "remaining": self.remaining()})
-
-        elif effect == "eject_random":
-            count = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
-            ejected = []
-            for _ in range(count):
-                if not self.chamber: break
-                ejected.append(self.chamber.pop(0))
-            if ejected:
-                self._sync_counts()
-                for p in self.players: p.intel = p.intel[len(ejected):]
-                actions.append({"type": "EJECT", "playerId": player.id, "shell": ejected[0], "shells": ejected, "remaining": self.remaining()})
-
-        elif effect == "invert":
-            self.pending_inverted = True
-            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "inverted", "next": self.chamber[0] if self.chamber else None})
-
-        elif effect == "gacha":
-            granted = self._grant_items(player, int(params.get("SHOTS", 3)))
-            actions.append({"type": "ITEMS_GRANTED", "playerId": player.id, "count": len(granted), "items": [items_module.get_item(i)["name"] for i in granted if items_module.get_item(i)], "reason": "gacha"})
-
-        elif effect == "gamble_heal":
-            if self.rng.random() < float(params.get("CHANCE", 50)) / 100.0:
-                amount = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
-                healed = self._heal(player, amount)
-                if healed: actions.append(healed)
-            else:
-                dmg = int(params.get("HP", 1))
-                player.hp = max(0, player.hp - dmg)
-                if player.hp <= 0: player.dead = True
-                actions.append({"type": "DAMAGE", "playerId": player.id, "amount": dmg, "hp": player.hp, "dead": player.dead})
-
-        elif effect == "rapid_fire":
-            shots = int(params.get("SHOTS", 2))
-            opponent = target or self._default_opponent(player)
-            actions.append({"type": "BARRAGE", "playerId": player.id, "shots": shots})
-            for _ in range(shots):
-                if opponent is None or opponent.dead or not self.chamber or self._check_winner(): break
-                shot = self.shoot(player.id, opponent.id)
-                if shot:
-                    actions.append(shot)
-                    taunt = self._taunt_for_shot(shot)
-                    if taunt: actions.append(taunt)
-            extends = False
-
-        else:
-            actions.append({"type": "ITEM_FAILED", "playerId": player.id, "itemId": item["id"], "reason": "unsupported"})
-
-        return actions, extends
+        actions, keep = handler(self, player, target, params, item)
+        if chance_used:
+            # 讓前端知道這次是「擲骰成功了」，方便顯示
+            actions.insert(0, {"type": "CHANCE_PASSED", "playerId": player.id, "itemId": item["id"]})
+        return actions, keep
 
     def _grant_items(self, player: Player, count: int) -> list[str]:
-        from config.game_config import item_cap, max_items
-
         granted: list[str] = []
         for _ in range(max(0, int(count))):
-            if len(player.items) >= max_items():
+            if len(player.items) >= self.max_item_slots():
                 break
             item_id: str | None = None
             # 原版：身上已經有 2 支菸時，把「cigarettes」從獎池裡移除再抽。
@@ -961,7 +855,7 @@ class Game:
                 candidate = items_module.roll_loot(self.rng, "ENEMY" if player.is_ai else "PLAYER")
                 if not candidate:
                     continue
-                cap = item_cap(candidate)
+                cap = self.item_cap(candidate)
                 if cap > 0 and player.items.count(candidate) >= cap:
                     continue
                 item_id = candidate
@@ -971,6 +865,25 @@ class Game:
             player.items.append(item_id)
             granted.append(item_id)
         return granted
+
+    # 上限一律讀「這一局的快照」，不依賴全域設定（伺服器改設定才不會前後不一致）
+    def max_item_slots(self) -> int:
+        return max(1, int((self.config.get("LIMITS") or {}).get("MAX_ITEMS", 8)))
+
+    # 每個回合能使用的道具數；0 = 不限制
+    def max_items_per_turn(self) -> int:
+        limits = self.config.get("LIMITS") or {}
+        try:
+            return max(0, int(limits.get("MAX_ITEMS_PER_TURN", MAX_ITEMS_PER_TURN)))
+        except (TypeError, ValueError):
+            return MAX_ITEMS_PER_TURN
+
+    def item_cap(self, item_id: str) -> int:
+        caps = (self.config.get("LIMITS") or {}).get("ITEM_CAPS") or {}
+        try:
+            return max(0, int(caps.get(item_id, 0)))
+        except (TypeError, ValueError):
+            return 0
 
     # ------------------------------------------------------------------
     #  開局彈藥提示（裝填鎖）

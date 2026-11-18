@@ -2,16 +2,54 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <title>惡魔輪盤 · Devil Roulette</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Noto+Serif+TC:wght@400;700;900&family=Share+Tech+Mono&display=swap"
+  rel="stylesheet"
+/>
 <link rel="stylesheet" href="/style.css" />
 </head>
-<body>
+<body class="devil-table">
+
+<!-- 全螢幕特效層（純視覺，pointer-events:none，永遠不擋操作） -->
+<div class="fx-layer" aria-hidden="true">
+  <div class="fx-vignette"></div>
+  <div class="fx-blood" id="fxBlood"></div>
+  <div class="fx-muzzle" id="fxMuzzle"></div>
+  <div class="fx-grain"></div>
+</div>
 
 <!-- ============ 大廳 ============ -->
 <section class="lobby" id="lobby">
+  <div class="lobby__crest" aria-hidden="true">
+    <svg viewBox="0 0 120 120" role="presentation">
+      <defs>
+        <linearGradient id="crestGold" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#f6e27a" />
+          <stop offset="45%" stop-color="#d4af37" />
+          <stop offset="100%" stop-color="#7a5a12" />
+        </linearGradient>
+      </defs>
+      <circle cx="60" cy="60" r="52" fill="none" stroke="url(#crestGold)" stroke-width="2" />
+      <circle cx="60" cy="60" r="44" fill="none" stroke="url(#crestGold)" stroke-width="1" opacity="0.6" />
+      <!-- 彈巢 6 孔 -->
+      <g fill="none" stroke="url(#crestGold)" stroke-width="3">
+        <circle cx="60" cy="34" r="9" />
+        <circle cx="82.5" cy="47" r="9" />
+        <circle cx="82.5" cy="73" r="9" />
+        <circle cx="60" cy="86" r="9" />
+        <circle cx="37.5" cy="73" r="9" />
+        <circle cx="37.5" cy="47" r="9" />
+      </g>
+      <circle cx="60" cy="60" r="6" fill="url(#crestGold)" />
+    </svg>
+  </div>
+
   <h1 class="lobby__title">♠ 惡魔輪盤</h1>
-  <p class="lobby__sub">Web 版本</p>
+  <p class="lobby__sub">DEVIL ROULETTE · UNDERGROUND TABLE</p>
 
   <div class="lobby__card">
     <label class="field">
@@ -44,6 +82,7 @@
     </div>
 
     <p class="lobby__players" id="lobbyPlayers" hidden></p>
+    <p class="lobby__share" id="roomShare" hidden></p>
 
     <p class="lobby__msg" id="lobbyMsg"></p>
   </div>
@@ -85,10 +124,126 @@
       <div class="foes" id="opponents"></div>
     </section>
 
-    <!-- 中央：只放散彈槍與回合文字 -->
+    <!-- 中央：左輪彈巢 + 散彈槍 + 回合文字 -->
     <section class="row row--gun">
       <div class="turn" id="turnLabel">等待開局…</div>
-      <div class="gun" id="gun" aria-hidden="true">🔫</div>
+
+      <!-- 本輪彈藥庫：實彈 / 空包彈各幾發（開局或換輪時出現，倒數結束自動收起） -->
+      <div class="cylinder" id="cylinder" aria-hidden="true">
+        <div class="cylinder__ring" id="cylinderRot">
+          <div class="ammo-bank__label">本輪彈藥</div>
+          <div class="ammo-bank__row">
+            <span class="ammo-bank__chip ammo-bank__chip--live">
+              <i class="ammo-bank__dot"></i>
+              <b>實彈</b><span class="ammo-bank__n" data-ammo="live">0</span>
+            </span>
+            <span class="ammo-bank__chip ammo-bank__chip--blank">
+              <i class="ammo-bank__dot"></i>
+              <b>空包</b><span class="ammo-bank__n" data-ammo="blank">0</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 橫向散彈槍（槍口朝左、木質握把在右）：換輪時整把上抬轉向 + 泵動裝填 -->
+      <div class="gun" id="gun" aria-hidden="true">
+        <svg viewBox="0 0 420 150" role="presentation">
+          <defs>
+            <linearGradient id="barrelGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#98a2ad" />
+              <stop offset="22%" stop-color="#6b7480" />
+              <stop offset="55%" stop-color="#333a42" />
+              <stop offset="100%" stop-color="#0e1116" />
+            </linearGradient>
+            <linearGradient id="magGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#5d656f" />
+              <stop offset="50%" stop-color="#2b3138" />
+              <stop offset="100%" stop-color="#0b0e12" />
+            </linearGradient>
+            <linearGradient id="receiverGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#4a525c" />
+              <stop offset="45%" stop-color="#232930" />
+              <stop offset="100%" stop-color="#0a0c0f" />
+            </linearGradient>
+            <linearGradient id="stockGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#7b4d28" />
+              <stop offset="45%" stop-color="#53301a" />
+              <stop offset="100%" stop-color="#2a1609" />
+            </linearGradient>
+            <linearGradient id="gripGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#3a4048" />
+              <stop offset="60%" stop-color="#1d2228" />
+              <stop offset="100%" stop-color="#080a0d" />
+            </linearGradient>
+            <linearGradient id="muzzleGrad2" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#fff8d0" stop-opacity="0.95" />
+              <stop offset="45%" stop-color="#ffb01f" stop-opacity="0.8" />
+              <stop offset="100%" stop-color="#b91c1c" stop-opacity="0" />
+            </linearGradient>
+          </defs>
+
+          <!-- 槍托（木質，右側，帶腰身弧度） -->
+          <path d="M330 56 L404 42 Q416 40 417 52 L414 94 Q413 106 400 105 L338 94 Q328 88 331 76 Z"
+                fill="url(#stockGrad)" stroke="#170b04" stroke-width="2.5" />
+          <path d="M404 42 Q416 40 417 52 L416 62 Q400 56 404 42 Z" fill="rgba(255,220,170,0.18)" />
+          <g stroke="rgba(0,0,0,0.42)" stroke-width="2" fill="none">
+            <path d="M342 62 L398 52" /><path d="M342 74 L400 65" />
+            <path d="M342 86 L400 78" />
+          </g>
+
+          <!-- 握把（黑色防滑紋） -->
+          <path d="M300 92 L338 92 L330 138 Q328 146 320 146 L306 146 Q298 146 297 138 Z"
+                fill="url(#gripGrad)" stroke="#05070a" stroke-width="2" />
+          <g stroke="rgba(160,180,200,0.22)" stroke-width="2" fill="none">
+            <path d="M302 104 L334 104" /><path d="M302 114 L333 114" /><path d="M302 124 L332 124" />
+          </g>
+
+          <!-- 機匣 -->
+          <path d="M196 62 L332 58 L340 92 L200 96 Z"
+                fill="url(#receiverGrad)" stroke="#05070a" stroke-width="2.5" />
+          <!-- 機匣上的燙金刻字 -->
+          <text x="246" y="84" font-family="Cinzel, serif" font-size="15" font-weight="700"
+                fill="url(#barrelGrad)" opacity="0.55" letter-spacing="1">DEVIL</text>
+
+          <!-- 下管（彈倉）：包住泵動護木下方 -->
+          <rect x="30" y="82" width="240" height="14" rx="6"
+                fill="url(#magGrad)" stroke="#05070a" stroke-width="2" />
+
+          <!-- 泵動護木：包覆在彈倉外，左右可抽送 -->
+          <g id="gunPump" class="gun__pump">
+            <rect x="86" y="76" width="104" height="26" rx="6"
+                  fill="url(#stockGrad)" stroke="#170b04" stroke-width="2.5" />
+            <g stroke="rgba(0,0,0,0.5)" stroke-width="2.5">
+              <path d="M100 78 L100 100" /><path d="M118 78 L118 100" />
+              <path d="M136 78 L136 100" /><path d="M154 78 L154 100" />
+              <path d="M172 78 L172 100" />
+            </g>
+            <rect x="86" y="76" width="104" height="4" fill="rgba(255,215,160,0.16)" />
+          </g>
+          <!-- 主槍管（朝左） -->
+          <rect x="26" y="58" width="308" height="21" rx="4"
+                fill="url(#barrelGrad)" stroke="#05070a" stroke-width="2.5" />
+          <rect x="28" y="62" width="300" height="3" fill="rgba(200,215,230,0.4)" />
+          <!-- 槍口 -->
+          <ellipse cx="27" cy="68" rx="4" ry="10.5" fill="#0a0c10" stroke="#6b7480" stroke-width="2" />
+          <!-- 準星 -->
+          <rect x="34" y="51" width="5" height="9" rx="1" fill="url(#barrelGrad)" />
+
+          <!-- 扳機護弓 -->
+          <path d="M292 96 q14 2 14 14 q0 8 -8 8" fill="none" stroke="#2a3038" stroke-width="5" stroke-linecap="round" />
+          <path d="M300 100 q4 8 2 13" fill="none" stroke="#0e1116" stroke-width="4" stroke-linecap="round" />
+
+          <!-- 槍口火光（開火時閃現） -->
+          <g id="gunMuzzle" class="gun__muzzle" opacity="0">
+            <path d="M24 68 L-30 46 L-12 68 L-30 90 Z" fill="url(#muzzleGrad2)" />
+            <circle cx="22" cy="68" r="12" fill="#fff6c9" opacity="0.92" />
+          </g>
+
+          <!-- 保留給換彈旋轉用的節點（散彈槍用它掛旋轉動畫，視覺上與泵動護木同步） -->
+          <g id="gunCylinder" class="gun__cylinder" transform-origin="246 76" opacity="0"></g>
+        </svg>
+      </div>
+
       <p class="bubble" id="bubble" hidden></p>
       <p class="hint" id="hint"></p>
     </section>
@@ -124,17 +279,74 @@
   </footer>
 </section>
 
-<!-- ============ 開局提示（3 秒後自動隱藏） ============ -->
+<!-- ============ 裝填提示：實體霰彈槽（Shell Rack）+ 進彈口 ============ -->
 <div class="reveal" id="reveal" hidden>
-  <div class="reveal__card" id="revealCard">
-    <div class="reveal__eyebrow">第 <b id="revealRound">1</b> 輪 · 本回合裝填</div>
-    <div class="reveal__counts">
-      <span class="reveal__live">實彈 <b id="revealLive">0</b> 發</span>
-      <span class="reveal__slash">/</span>
-      <span class="reveal__blank">空包彈 <b id="revealBlank">0</b> 發</span>
+  <div class="reveal__card rack" id="revealCard">
+    <!-- 金屬銘牌：極簡文字，不搶子彈視覺 -->
+    <div class="rack__plate">
+      <span class="rack__round">第 <b id="revealRound">1</b> 輪</span>
+      <span class="rack__sep"></span>
+      <span class="rack__tag rack__tag--live">LIVE <b id="revealLive">0</b></span>
+      <span class="rack__dot">·</span>
+      <span class="rack__tag rack__tag--blank">BLANK <b id="revealBlank">0</b></span>
     </div>
-    <div class="reveal__bar"><i id="revealBar"></i></div>
+
+    <div class="rack__body">
+      <!-- 暗木凹槽長條彈藥架：子彈由 fx.js 依數量生成 -->
+      <div class="rack__slots">
+        <div class="rack__groove" id="revealShells" aria-hidden="true"></div>
+      </div>
+
+      <!-- 右側散彈槍槍機／進彈口 -->
+      <div class="rack__receiver" id="rackReceiver" aria-hidden="true">
+        <svg viewBox="0 0 120 150" role="presentation">
+          <defs>
+            <linearGradient id="recvSteel" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#79828f" />
+              <stop offset="38%" stop-color="#39414b" />
+              <stop offset="72%" stop-color="#1b2027" />
+              <stop offset="100%" stop-color="#080b0e" />
+            </linearGradient>
+            <linearGradient id="recvPort" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#000" />
+              <stop offset="55%" stop-color="#0b0e12" />
+              <stop offset="100%" stop-color="#232a32" />
+            </linearGradient>
+            <linearGradient id="recvGlow" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#ffd28a" stop-opacity="0" />
+              <stop offset="55%" stop-color="#ffc45e" stop-opacity="0.85" />
+              <stop offset="100%" stop-color="#fff6cf" stop-opacity="0.95" />
+            </linearGradient>
+          </defs>
+
+          <!-- 機匣本體 -->
+          <path d="M14 34 L96 26 Q110 24 112 40 L110 106 Q108 122 92 120 L16 112 Q4 108 6 74 Q6 40 14 34 Z"
+                fill="url(#recvSteel)" stroke="#05070a" stroke-width="2.5" />
+          <!-- 進彈口（左側開口，子彈飛入） -->
+          <path d="M10 58 L40 54 L40 96 L10 92 Z" fill="url(#recvPort)" stroke="#6b7480" stroke-width="2" />
+          <!-- 進彈口內側高光：進彈時閃光 -->
+          <g id="rackPortGlow" class="rack__port-glow" opacity="0">
+            <rect x="10" y="58" width="30" height="38" fill="url(#recvGlow)" />
+          </g>
+          <!-- 機匣刻線與螺絲 -->
+          <g stroke="rgba(190,205,220,0.22)" stroke-width="1.6" fill="none">
+            <path d="M52 44 L100 39" /><path d="M52 52 L102 47" />
+            <path d="M52 104 L102 100" />
+          </g>
+          <circle cx="96" cy="66" r="5" fill="#0d1116" stroke="#7d8794" stroke-width="1.6" />
+          <circle cx="96" cy="88" r="5" fill="#0d1116" stroke="#7d8794" stroke-width="1.6" />
+          <!-- 拋殼口 -->
+          <rect x="58" y="70" width="34" height="22" rx="3" fill="#080b0e" stroke="#5b636d" stroke-width="1.6" />
+          <!-- 底部扳機護弓 -->
+          <path d="M34 120 q16 20 34 18" fill="none" stroke="#2a3038" stroke-width="5" stroke-linecap="round" />
+        </svg>
+      </div>
+    </div>
+
     <div class="reveal__foot">記住了嗎？Also oppo is gay</div>
+
+    <!-- 進度條保留（隱藏視覺，只作為倒數時間軸節點，動畫由 fx.js 控制） -->
+    <div class="reveal__bar" aria-hidden="true"><i id="revealBar"></i></div>
   </div>
 </div>
 
@@ -159,6 +371,9 @@
 <!-- 道具說明提示框：跟著滑鼠跑，pointer-events:none 才不會擋點擊 -->
 <div id="itemTooltip" class="item-tooltip" hidden></div>
 
+<!-- 道具選中說明卡：單擊道具後出現，固定在道具欄上方（手機）或賭桌中央 -->
+<div id="itemCard" class="item-card" hidden></div>
+
 <!-- Socket.IO 客戶端：優先本機檔案（離線可用），失敗才退 CDN -->
 <script src="/vendor/socket.io.min.js" onerror="window.__sioLocalFailed = true"></script>
 <script>
@@ -167,5 +382,7 @@
   }
 </script>
 <script src="/client.js?v=20261118a"></script>
+<!-- 純視覺外掛：只觀察 DOM 與按鈕互動，不改 client.js 的通訊與狀態 -->
+<script src="/fx.js?v=20261118a"></script>
 </body>
 </html>

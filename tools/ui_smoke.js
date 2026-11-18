@@ -323,7 +323,72 @@ const tx = parseInt(tip.style.left, 10);
 check("靠近右邊界時往左翻轉", tx < innerWidth - 5, { left: tip.style.left, innerWidth });
 slots[1]._listeners.mouseleave[0]({});
 
-console.log("6) 開局前（房間階段）");
+console.log("6) 道具可用條件（回合權限）");
+// 幫 makeEl 補上 disabled 預設值，方便判斷
+function itemSlots() {
+  // stub 元素的 className 是字串，但 client.js 用 classList 標記；
+  // 這裡兩種都接受，避免測試環境差異造成誤判。
+  return Array.prototype.filter.call(
+    document.getElementById("itemsGrid").children,
+    function (n) {
+      var isSlot =
+        (n.classList && n.classList.contains("slot")) ||
+        String(n.className || "").indexOf("slot") !== -1;
+      var isEmpty =
+        (n.classList && n.classList.contains("slot--empty")) ||
+        String(n.className || "").indexOf("slot--empty") !== -1;
+      return isSlot && !isEmpty;
+    }
+  );
+}
+
+// 送一份帶指定 activeId / itemsThisTurn / revealUntil 的狀態並回傳道具格
+function sendState(activeId, itemsThisTurn, revealUntil) {
+  fire("room:update", {
+    code: "ABCD",
+    hostId: "p1",
+    youId: "p1",
+    seats: [{ id: "p1", name: "你", ready: true }, { id: "p2", name: "阿明", ready: true }],
+    game: {
+      public: {
+        phase: "playing", round: 2, activeId: activeId, activeName: activeId === "p1" ? "你" : "阿明",
+        winnerId: null,
+        players: [player("p1", "你", 4), player("p2", "阿明", 2)], log: [],
+        remaining: { live: 2, blank: 1, total: 3 },
+      },
+      private: {
+        playerId: "p1",
+        items: [{ id: "CIGARETTE", name: "香菸", icon: "🚬", desc: "回復 1 點生命。" }],
+        mods: {}, intel: [], itemsThisTurn: itemsThisTurn || 0,
+      },
+    },
+    revealUntil: revealUntil || 0,
+    revealMs: revealUntil ? 3000 : 0,
+    serverNow: Date.now(),
+    turnDeadline: Date.now() + 20000,
+  });
+  return itemSlots();
+}
+
+// (a) 不是我的回合 → 道具必須全部 disabled
+let its = sendState("p2", 0, 0);
+check("別人的回合 → 道具全部 disabled", its.length > 0 && its.every((b) => b.disabled === true),
+  its.map((b) => b.disabled));
+
+// (b) 輪到我 → 道具解鎖
+its = sendState("p1", 0, 0);
+check("我的回合 → 道具可點", its.length > 0 && its.every((b) => b.disabled === false),
+  its.map((b) => b.disabled));
+
+// (c) 裝填鎖期間（revealUntil 在未來）→ 道具 disabled
+its = sendState("p1", 0, Date.now() + 3000);
+check("裝填鎖期間 → 道具 disabled", its.every((b) => b.disabled === true), its.map((b) => b.disabled));
+
+// (d) 本回合道具已用滿 → disabled
+its = sendState("p1", 99, 0);
+check("本回合已用滿 → 道具 disabled", its.every((b) => b.disabled === true), its.map((b) => b.disabled));
+
+console.log("7) 開局前（房間階段）");
 fire("room:update", {
   code: "ABCD",
   hostId: "p1",

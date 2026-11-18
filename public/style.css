@@ -1,186 +1,413 @@
-/* =========================================================
-   惡魔輪盤 · 極簡純 2D（上下對戰）
-   版面只有三層：上半對手 / 中央槍 / 下半自己，底部兩顆大按鈕。
-   沒有任何彈藥數量與歷史日誌區塊。
-   ========================================================= */
+/* =========================================================================
+   惡魔輪盤 · Devil Roulette —— 暗黑地下賭桌風
+   純 CSS：皮革 / 舊木 / 徑向漸層 / 暗角 / 噪點，全部不依賴外部圖片
+   結構 hook（.foes .foe .me .items .slot .btn--big .turn .reveal .actions）
+   與 index.html 的 DOM ID 一律保留，client.js 不需要改。
+   ========================================================================= */
 
 :root {
-  --bg: #0a0710;
-  --line: rgba(255, 255, 255, 0.1);
-  --text: #f3edf5;
-  --muted: rgba(243, 237, 245, 0.58);
-  --blue: #3b82f6;
-  --blue-deep: #1d4ed8;
-  --red: #ef4444;
-  --red-deep: #b91c1c;
-  --live: #ff4757;
-  --blank: #38bdf8;
-  --gold: #fbbf24;
+  --gold: #d4af37;
+  --gold-bright: #f6e27a;
+  --gold-deep: #7a5a12;
+  --blood: #b91c1c;
+  --blood-bright: #ff3b3b;
+  --blood-deep: #450a0a;
+
+  --felt: #3b0b10;
+  --felt-dark: #1a0508;
+  --leather: #241318;
+  --wood: #2a1a10;
+  --wood-dark: #150c07;
+
+  --ink: #f2e6cf;
+  --ink-dim: #b9a98c;
+  --ink-mute: #8b7c63;
+
+  --slot-bg: linear-gradient(180deg, #1b1410 0%, #0d0908 100%);
+  --emboss: inset 0 2px 6px rgba(0, 0, 0, 0.9), inset 0 -1px 0 rgba(255, 220, 150, 0.08);
+  --gold-edge: 1px solid rgba(212, 175, 55, 0.55);
+
+  --font-display: "Cinzel", "Noto Serif TC", Georgia, "Times New Roman", serif;
+  --font-body: "Noto Serif TC", "Microsoft JhengHei", serif;
+  --font-num: "Share Tech Mono", "Courier New", monospace;
+
+  /* 全站統一的絲滑過渡：只動 transform / opacity / box-shadow / border-color，
+     這四個屬性都不會觸發 layout，能維持 60fps。 */
+  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --transition-smooth: transform 0.18s var(--ease-smooth), opacity 0.22s ease,
+    box-shadow 0.22s ease, border-color 0.22s ease;
+
+  color-scheme: dark;
 }
 
-* {
+/* ------------------------------------------------------------------ 基底 */
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
-html,
-body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-}
-
-body {
-  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei",
-    sans-serif;
-  color: var(--text);
-  background:
-    radial-gradient(1100px 620px at 50% -18%, rgba(120, 20, 60, 0.5), transparent 62%),
-    radial-gradient(760px 460px at 50% 108%, rgba(20, 60, 110, 0.38), transparent 66%),
-    var(--bg);
-  -webkit-font-smoothing: antialiased;
-  overflow: hidden;
-}
-
+/* ⚠ 最優先規則：任何帶 hidden 屬性的元素一律不顯示。
+   下面很多元件（.lobby / .game / .reveal / .result …）都設了 display:flex/grid，
+   那些宣告的優先度比瀏覽器預設的 [hidden]{display:none} 高，
+   會導致「進入遊戲後大廳仍然顯示」，於是上下同時出現兩個畫面。
+   放在檔案最上方並加 !important，任何元件的 display 都蓋不掉它。 */
 [hidden] {
   display: none !important;
 }
 
-/* ------------------------------------------------------------ 按鈕 */
+/* 觸控最佳化：避免連點兩下縮放、避免 300ms 點擊延遲 */
+html {
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+
+button,
+.slot,
+.btn,
+.targets button {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--ink);
+  background-color: #0a0405;
+  /* 多層徑向漸層：中央氈布燈光 + 邊緣暗角 */
+  background-image:
+    radial-gradient(ellipse 70% 55% at 50% 18%, rgba(212, 175, 55, 0.10) 0%, transparent 62%),
+    radial-gradient(ellipse 90% 70% at 50% 42%, #4a0e14 0%, #2a0709 45%, #120405 78%, #070203 100%),
+    radial-gradient(circle at 12% 82%, rgba(185, 28, 28, 0.16) 0%, transparent 46%),
+    radial-gradient(circle at 88% 12%, rgba(212, 175, 55, 0.10) 0%, transparent 42%);
+  background-attachment: fixed;
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 舊木紋：細橫紋 + 斜向纖維 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.5;
+  background-image:
+    repeating-linear-gradient(
+      92deg,
+      rgba(0, 0, 0, 0.22) 0px,
+      rgba(0, 0, 0, 0.22) 2px,
+      transparent 2px,
+      transparent 7px
+    ),
+    repeating-linear-gradient(
+      88deg,
+      rgba(76, 42, 20, 0.28) 0px,
+      rgba(76, 42, 20, 0.28) 1px,
+      transparent 1px,
+      transparent 13px
+    );
+  mix-blend-mode: multiply;
+}
+
+/* 皮革顆粒噪點 */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.35;
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.05) 0 1px, transparent 1px),
+    radial-gradient(circle at 70% 65%, rgba(0, 0, 0, 0.5) 0 1px, transparent 1px),
+    radial-gradient(circle at 40% 80%, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px);
+  background-size: 3px 3px, 4px 4px, 5px 5px;
+}
+
+/* ------------------------------------------------------------------ 全螢幕特效層 */
+.fx-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 90;
+}
+
+.fx-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 78% 68% at 50% 50%, transparent 52%, rgba(0, 0, 0, 0.78) 100%);
+}
+
+.fx-grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.16;
+  background-image: repeating-conic-gradient(
+    rgba(255, 255, 255, 0.05) 0% 25%,
+    rgba(0, 0, 0, 0.05) 25% 50%
+  );
+  background-size: 2px 2px;
+  mix-blend-mode: overlay;
+}
+
+/* 血紅邊緣閃光 */
+.fx-blood {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background:
+    radial-gradient(ellipse 82% 74% at 50% 50%, transparent 48%, rgba(185, 28, 28, 0.86) 100%),
+    radial-gradient(ellipse 60% 50% at 50% 50%, transparent 60%, rgba(90, 0, 0, 0.6) 100%);
+  transition: opacity 0.5s ease-out;
+}
+
+.fx-blood.is-hot {
+  animation: bloodPulse 0.7s ease-out;
+}
+
+@keyframes bloodPulse {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 動畫結束後一定回到透明（避免 headless / 分頁切換時卡住） */
+.fx-blood:not(.is-hot) {
+  opacity: 0;
+  transition: opacity 0.5s ease-out;
+}
+
+/* 槍口火光（全螢幕方向光） */
+.fx-muzzle {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(circle at 50% 46%, rgba(255, 226, 150, 0.55) 0%, rgba(255, 140, 20, 0.22) 22%, transparent 52%);
+}
+
+.fx-muzzle.is-fire {
+  animation: muzzlePop 0.3s ease-out;
+}
+
+@keyframes muzzlePop {
+  0% { opacity: 0; }
+  8% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ------------------------------------------------------------------ 共用元件 */
 .btn {
-  font: inherit;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 10px 16px;
+  position: relative;
+  will-change: transform;
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  padding: 0.72rem 1.15rem;
   cursor: pointer;
-  transition: transform 0.12s ease, background 0.16s ease, border-color 0.16s ease,
-    box-shadow 0.16s ease, opacity 0.16s ease;
+  border-radius: 6px;
+  white-space: nowrap;
+  border: var(--gold-edge);
+  background:
+    linear-gradient(180deg, rgba(80, 52, 30, 0.9) 0%, rgba(34, 20, 12, 0.95) 55%, rgba(14, 8, 5, 1) 100%);
+  box-shadow:
+    0 2px 0 rgba(0, 0, 0, 0.85),
+    0 6px 16px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 226, 170, 0.22),
+    inset 0 -2px 6px rgba(0, 0, 0, 0.8);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  transition: var(--transition-smooth), filter 0.15s ease;
 }
 
 .btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.22);
+  filter: brightness(1.16);
+  border-color: var(--gold);
 }
 
 .btn:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: translateY(3px);
+  box-shadow:
+    0 0 0 rgba(0, 0, 0, 0.85),
+    0 2px 6px rgba(0, 0, 0, 0.65),
+    inset 0 2px 6px rgba(0, 0, 0, 0.9),
+    inset 0 -1px 0 rgba(255, 226, 170, 0.12);
 }
 
 .btn:disabled {
-  opacity: 0.42;
   cursor: not-allowed;
-  filter: grayscale(0.7);
+  filter: grayscale(0.72) brightness(0.62);
+  opacity: 0.66;
 }
 
 .btn--blue {
-  background: linear-gradient(180deg, var(--blue), var(--blue-deep));
-  border-color: rgba(147, 197, 253, 0.5);
-  box-shadow: 0 8px 22px -12px rgba(59, 130, 246, 0.9);
+  border-color: rgba(212, 175, 55, 0.72);
+  color: #f7ecc9;
 }
 
 .btn--red {
-  background: linear-gradient(180deg, var(--red), var(--red-deep));
-  border-color: rgba(252, 165, 165, 0.5);
-  box-shadow: 0 8px 22px -12px rgba(239, 68, 68, 0.95);
-}
-
-.btn--blue:hover:not(:disabled) {
-  background: linear-gradient(180deg, #4f8cf7, #2058d8);
-}
-
-.btn--red:hover:not(:disabled) {
-  background: linear-gradient(180deg, #f55353, #c81e1e);
+  border-color: rgba(255, 90, 90, 0.6);
+  background:
+    linear-gradient(180deg, rgba(122, 18, 18, 0.95) 0%, rgba(70, 8, 8, 0.96) 52%, rgba(26, 3, 3, 1) 100%);
+  box-shadow:
+    0 2px 0 rgba(0, 0, 0, 0.85),
+    0 6px 18px rgba(120, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 160, 160, 0.24),
+    inset 0 -2px 8px rgba(0, 0, 0, 0.85);
 }
 
 .btn--ghost {
-  background: rgba(255, 255, 255, 0.04);
+  background: linear-gradient(180deg, rgba(48, 34, 22, 0.7) 0%, rgba(18, 12, 8, 0.9) 100%);
+  border-color: rgba(212, 175, 55, 0.35);
+  color: var(--ink-dim);
 }
 
 .btn--tiny {
-  padding: 6px 12px;
-  font-size: 13px;
-  border-radius: 9px;
+  padding: 0.36rem 0.7rem;
+  font-size: 0.78rem;
 }
 
 .btn--wide {
   width: 100%;
 }
 
+/* 左輪板機按鈕：實體下沉 + 危險光暈 */
 .btn--big {
+  flex: 1 1 0;
+  min-height: clamp(52px, 9vh, 74px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 16px 22px;
-  border-radius: 16px;
-  min-height: 72px;
+  gap: 0.18rem;
+  border-radius: 10px;
+  border-width: 2px;
+  font-size: 1.08rem;
+  letter-spacing: 0.08em;
 }
 
 .btn__main {
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-size: 1.12rem;
+  font-weight: 900;
 }
 
 .btn__sub {
-  font-size: 12px;
-  opacity: 0.8;
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-mute);
   font-weight: 400;
 }
 
-/* ------------------------------------------------------------ 大廳 */
+#btnEnemy:not(:disabled) {
+  animation: dangerPulse 2.6s ease-in-out infinite;
+}
+
+@keyframes dangerPulse {
+  0%, 100% { box-shadow: 0 2px 0 rgba(0,0,0,.85), 0 6px 18px rgba(120,0,0,.55), 0 0 0 rgba(255,60,60,0), inset 0 1px 0 rgba(255,160,160,.24), inset 0 -2px 8px rgba(0,0,0,.85); }
+  50% { box-shadow: 0 2px 0 rgba(0,0,0,.85), 0 6px 18px rgba(120,0,0,.55), 0 0 22px rgba(255,60,60,.55), inset 0 1px 0 rgba(255,160,160,.24), inset 0 -2px 8px rgba(0,0,0,.85); }
+}
+
+/* 觸發板機的那一下（fx.js 加 class） */
+.btn--big.is-armed {
+  transform: translateY(5px) scale(0.99);
+  filter: brightness(1.3);
+}
+
+/* ------------------------------------------------------------------ 大廳 */
 .lobby {
   position: relative;
   z-index: 1;
-  max-width: 620px;
+  max-width: 560px;
   margin: 0 auto;
-  padding: 48px 20px 40px;
+  padding: clamp(1.4rem, 4vw, 3rem) 1.1rem 3rem;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  height: 100%;
-  overflow-y: auto;
+  gap: 1.1rem;
+}
+
+.lobby__crest {
+  width: 92px;
+  height: 92px;
+  margin: 0 auto;
+  filter: drop-shadow(0 0 18px rgba(212, 175, 55, 0.45));
+  animation: crestGlow 4.5s ease-in-out infinite;
+}
+
+@keyframes crestGlow {
+  0%, 100% { filter: drop-shadow(0 0 10px rgba(212, 175, 55, 0.3)); }
+  50% { filter: drop-shadow(0 0 26px rgba(212, 175, 55, 0.7)); }
 }
 
 .lobby__title {
   margin: 0;
-  font-size: clamp(28px, 6vw, 42px);
-  letter-spacing: 0.06em;
   text-align: center;
-  text-shadow: 0 0 26px rgba(255, 71, 87, 0.55);
+  font-family: var(--font-display);
+  font-size: clamp(2.1rem, 7vw, 3.2rem);
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  background: linear-gradient(180deg, #fff6cf 0%, var(--gold) 42%, #8a6a1c 78%, #4a3608 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6), 0 0 34px rgba(212, 175, 55, 0.28);
 }
 
 .lobby__sub {
-  margin: 0 0 6px;
+  margin: -0.4rem 0 0;
   text-align: center;
-  color: var(--muted);
-  font-size: 14px;
+  font-family: var(--font-num);
+  font-size: 0.74rem;
+  letter-spacing: 0.34em;
+  color: var(--ink-mute);
 }
 
 .lobby__card {
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 18px;
+  position: relative;
+  padding: 1.25rem;
+  border-radius: 12px;
+  border: var(--gold-edge);
+  background:
+    linear-gradient(180deg, rgba(30, 18, 14, 0.94) 0%, rgba(14, 8, 7, 0.97) 100%);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.75),
+    inset 0 1px 0 rgba(255, 220, 150, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.9);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0.85rem;
+}
+
+.lobby__card--rules {
+  background: linear-gradient(180deg, rgba(24, 14, 12, 0.9) 0%, rgba(10, 6, 5, 0.96) 100%);
 }
 
 .lobby__row {
   display: flex;
-  gap: 10px;
-  align-items: center;
+  gap: 0.6rem;
+  align-items: flex-end;
+}
+
+.lobby__row > .field {
+  flex: 1 1 auto;
 }
 
 .lobby__divider {
   display: flex;
   align-items: center;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 12px;
+  gap: 0.7rem;
+  color: var(--ink-mute);
+  font-family: var(--font-num);
+  font-size: 0.7rem;
+  letter-spacing: 0.22em;
 }
 
 .lobby__divider::before,
@@ -188,157 +415,216 @@ body {
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--line);
+  background: linear-gradient(90deg, transparent, rgba(212, 175, 55, 0.5), transparent);
 }
 
 .lobby__msg {
   margin: 0;
-  min-height: 18px;
-  font-size: 13px;
-  color: var(--muted);
+  min-height: 1.2em;
+  font-size: 0.82rem;
+  text-align: center;
+  color: var(--ink-mute);
 }
 
 .lobby__msg.is-ok {
-  color: #86efac;
+  color: #8fd6a0;
 }
 
 .lobby__msg.is-error {
-  color: #fca5a5;
+  color: #ff8a8a;
 }
 
-/* 大廳的人數面板：2 / 4 人、房間已滿、座位清單 */
 .lobby__players {
   margin: 0;
-  padding: 8px 11px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: rgba(0, 0, 0, 0.28);
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--muted);
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid rgba(212, 175, 55, 0.28);
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 0.8rem;
+  text-align: center;
+  color: var(--ink-dim);
 }
 
 .lobby__players.is-full {
-  border-color: rgba(239, 68, 68, 0.55);
-  color: #fca5a5;
+  border-color: rgba(255, 90, 90, 0.6);
+  color: #ffb3b3;
 }
 
-/* 「人數」下拉：跟按鈕同一列 */
-.field--inline {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-
-.field--inline > .field__label {
-  white-space: nowrap;
-}
-
-.field__select {
-  padding: 9px 10px;
-  min-width: 132px;
+/* 邀請連結：房主可點擊複製 */
+.lobby__share {
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  border: 1px dashed rgba(212, 175, 55, 0.5);
+  background: rgba(0, 0, 0, 0.5);
+  font-family: var(--font-num);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--gold-bright);
+  text-align: center;
+  word-break: break-all;
   cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.field__select option {
-  color: #111827;
+.lobby__share:hover {
+  border-color: var(--gold);
+  background: rgba(60, 40, 10, 0.5);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0.34rem;
+}
+
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.field--inline > .field__label {
+  white-space: nowrap;
+  margin: 0;
 }
 
 .field__label {
-  font-size: 12px;
-  color: var(--muted);
-  letter-spacing: 0.06em;
+  font-family: var(--font-num);
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+  color: var(--ink-mute);
 }
 
 .field__input {
-  font: inherit;
-  color: var(--text);
-  background: rgba(0, 0, 0, 0.34);
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  padding: 11px 13px;
+  width: 100%;
+  padding: 0.68rem 0.8rem;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--ink);
+  background: var(--slot-bg);
+  border: 1px solid rgba(212, 175, 55, 0.32);
+  border-radius: 6px;
+  box-shadow: var(--emboss);
   outline: none;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .field__input:focus {
-  border-color: rgba(59, 130, 246, 0.7);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+  border-color: var(--gold);
+  box-shadow: var(--emboss), 0 0 0 1px rgba(212, 175, 55, 0.45), 0 0 16px rgba(212, 175, 55, 0.22);
 }
 
 .field__input--code {
-  width: 96px;
+  font-family: var(--font-num);
+  font-size: 1.25rem;
+  letter-spacing: 0.4em;
   text-align: center;
-  letter-spacing: 0.3em;
   text-transform: uppercase;
+}
+
+.field__select {
+  font-family: var(--font-num);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.field__select option {
+  background: #140b08;
+  color: var(--ink);
 }
 
 .card__title {
   margin: 0;
-  font-size: 14px;
-  letter-spacing: 0.12em;
-  color: var(--muted);
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.2em;
+  color: var(--gold);
+  text-transform: uppercase;
 }
 
 .rules {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 1.1rem;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  font-size: 13px;
-  color: rgba(243, 237, 245, 0.78);
-  line-height: 1.55;
+  gap: 0.42rem;
+  font-size: 0.84rem;
+  line-height: 1.6;
+  color: var(--ink-dim);
 }
 
-/* ------------------------------------------------------------ 遊戲畫面 */
+.rules li::marker {
+  color: var(--gold-deep);
+}
+
+/* ------------------------------------------------------------------ 遊戲畫面 */
+/* 單屏滿版：頂列 + 對手 + 中央 + 我/道具 + 按鈕，全部塞進一個視窗高度 */
 .game {
   position: relative;
   z-index: 1;
-  height: 100vh;
+  display: flex;
+  flex-direction: column;
   height: 100dvh;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  padding: 10px 14px 14px;
-  gap: 8px;
+  max-height: 100dvh;
+  overflow: hidden;      /* 任何超出的部分都不要變成捲動 → 按鈕永遠看得到 */
+}
+
+/* 舊瀏覽器沒有 dvh 時退回 vh */
+@supports not (height: 100dvh) {
+  .game {
+    height: 100vh;
+    max-height: 100vh;
+  }
 }
 
 .bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 13px;
-  color: var(--muted);
-  padding: 2px 4px;
+  gap: 0.6rem;
+  padding: 0.5rem clamp(0.7rem, 3vw, 1.4rem);
+  border-bottom: 1px solid rgba(212, 175, 55, 0.26);
+  background: linear-gradient(180deg, rgba(12, 6, 5, 0.92) 0%, rgba(6, 3, 3, 0.7) 100%);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+}
+
+.bar__item {
+  font-family: var(--font-num);
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  color: var(--ink-dim);
+  white-space: nowrap;
 }
 
 .bar b {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
+  font-family: var(--font-num);
+  font-size: 0.98rem;
+  color: var(--gold);
+  text-shadow: 0 0 12px rgba(212, 175, 55, 0.5);
 }
 
 .bar__sep {
-  opacity: 0.5;
+  color: rgba(212, 175, 55, 0.45);
 }
 
 .bar__tools {
   margin-left: auto;
   display: flex;
-  gap: 8px;
+  gap: 0.45rem;
 }
 
-/* ---- 回合倒數：紅色圓圈大數字，只有輪到你時才顯示 ---- */
+/* 回合倒數：金環 + 脈動 */
 .turn-timer {
-  display: flex;
-  align-items: center;
-  margin-right: 4px;
+  position: relative;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 34%, #4a1b0d 0%, #1a0705 70%, #0a0303 100%);
+  border: 2px solid var(--gold);
+  box-shadow: 0 0 16px rgba(212, 175, 55, 0.5), inset 0 0 14px rgba(0, 0, 0, 0.9);
 }
 
 .turn-timer[hidden] {
@@ -346,75 +632,43 @@ body {
 }
 
 .turn-timer__ring {
-  display: grid;
-  place-items: center;
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
-  font-family: var(--mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
-  font-size: 24px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.5px;
-  color: #ffffff;
-  background: radial-gradient(circle at 50% 34%, #e0212f, #8a0110 72%);
-  border: 3px solid rgba(255, 255, 255, 0.88);
-  box-shadow: 0 0 0 3px rgba(224, 33, 47, 0.22), 0 0 18px rgba(224, 33, 47, 0.55),
-    inset 0 2px 10px rgba(0, 0, 0, 0.45);
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
-  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  font-family: var(--font-num);
+  font-size: 1.02rem;
+  color: var(--gold-bright);
+  text-shadow: 0 0 10px rgba(246, 226, 122, 0.7);
 }
 
-/* 剩 5 秒以內：開始心跳 */
 .turn-timer__ring.is-danger {
-  background: radial-gradient(circle at 50% 34%, #ff3b30, #7a0008 72%);
-  border-color: #ffd7da;
-  box-shadow: 0 0 0 4px rgba(255, 59, 48, 0.28), 0 0 26px rgba(255, 59, 48, 0.8),
-    inset 0 2px 10px rgba(0, 0, 0, 0.45);
+  color: #ff6b6b;
+  text-shadow: 0 0 14px rgba(255, 60, 60, 0.9);
   animation: timerPulse 0.9s ease-in-out infinite;
 }
 
-/* 歸零：顯示「時間到」 */
 .turn-timer__ring.is-over {
-  width: auto;
-  min-width: 66px;
-  padding: 0 12px;
-  border-radius: 999px;
-  font-size: 15px;
-  background: radial-gradient(circle at 50% 34%, #5a5a5a, #262626 72%);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1), inset 0 2px 10px rgba(0, 0, 0, 0.5);
-  animation: none;
+  font-size: 0.62rem;
+  color: #ff8a8a;
 }
 
 @keyframes timerPulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.09);
-  }
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.14); }
 }
 
-/* ---- 道具提示框 ---- */
+/* 道具提示框 */
 .item-tooltip {
   position: fixed;
-  left: 0;
-  top: 0;
-  z-index: 900;
-  max-width: 260px;
-  padding: 9px 12px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  color: #ffffff;
-  font-size: 13px;
-  line-height: 1.5;
+  z-index: 120;
+  max-width: 240px;
+  padding: 0.6rem 0.7rem;
   pointer-events: none;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  animation: tooltipIn 0.12s ease-out;
+  border-radius: 8px;
+  border: 1px solid rgba(212, 175, 55, 0.6);
+  background: linear-gradient(180deg, rgba(28, 16, 12, 0.98) 0%, rgba(10, 5, 4, 0.99) 100%);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 226, 170, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  animation: tooltipIn 0.14s ease-out;
 }
 
 .item-tooltip[hidden] {
@@ -422,672 +676,1532 @@ body {
 }
 
 .item-tooltip__name {
-  display: block;
-  margin-bottom: 3px;
-  font-weight: 700;
-  color: #ffd166;
+  font-family: var(--font-display);
+  font-size: 0.86rem;
+  color: var(--gold-bright);
+  letter-spacing: 0.05em;
 }
 
 .item-tooltip__desc {
-  display: block;
-  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--ink-dim);
 }
 
 .item-tooltip__meta {
-  display: block;
-  margin-top: 4px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.7rem;
+  color: #ff9d9d;
 }
 
 @keyframes tooltipIn {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }
 
-/* ---- 競技場：上半對手 / 中央槍 / 下半自己 ---- */
+/* ------------------------------------------------------------------ 競技場 */
+/* arena 吃掉「頂列 + 按鈕列」以外的所有高度；三列各自分配空間 */
 .arena {
+  flex: 1 1 auto;
+  min-height: 0;         /* 關鍵：允許子元素被壓縮，否則 grid 會撐破容器 */
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 6px;
+  gap: clamp(0.25rem, 1.2vh, 0.8rem);
+  padding: clamp(0.4rem, 1.8vw, 1rem) clamp(0.6rem, 2.4vw, 1.4rem);
+  max-width: 1080px;
+  width: 100%;
+  margin: 0 auto;
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 0;
 }
 
-/* ---- 上半：對手（1 個置中、3 個並排） ---- */
 .row--foes {
+  align-items: flex-start;
+  /* 矮螢幕時讓對手區可被壓縮，避免和中央彈藥庫重疊 */
   min-height: 0;
+  max-height: 26vh;
+  flex: 0 1 auto;
+  overflow: visible;
 }
 
 .foes {
+  --n: 1;
+  width: 100%;
   display: grid;
-  /* JS 會設 --n = 對手數量（1~3） */
-  grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr));
-  gap: 10px;
-  justify-content: center;
-  max-width: min(100%, calc(var(--n, 1) * 320px));
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  gap: clamp(0.4rem, 1.6vw, 0.9rem);
+  /* 席位別撐滿整個寬度，1 人時置中、多人時並排 */
+  max-width: min(760px, calc(var(--n) * 260px));
   margin: 0 auto;
 }
 
+/* 對手席位：金屬框 + 酒紅氈布 */
 .foe {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 12px 10px;
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  cursor: pointer;
-  transition: transform 0.14s ease, border-color 0.16s ease, background 0.16s ease,
-    box-shadow 0.16s ease, opacity 0.16s ease;
-}
-
-.foe:hover {
-  background: rgba(255, 255, 255, 0.085);
-}
-
-.foe.is-active {
-  border-color: rgba(255, 71, 87, 0.85);
-  box-shadow: 0 0 0 1px rgba(255, 71, 87, 0.5), 0 0 26px -8px rgba(255, 71, 87, 0.85);
-  background: rgba(255, 71, 87, 0.12);
-}
-
-.foe.is-selected {
-  border-color: var(--gold);
-  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.55), 0 0 24px -10px rgba(251, 191, 36, 0.9);
-}
-
-.foe.is-dead {
-  opacity: 0.42;
-  filter: grayscale(0.85);
+  gap: clamp(0.1rem, 0.6vh, 0.34rem);
+  padding: clamp(0.3rem, 1vh, 0.7rem) 0.5rem clamp(0.25rem, 0.9vh, 0.6rem);
+  border-radius: 10px;
+  border: 1px solid rgba(212, 175, 55, 0.34);
+  background:
+    radial-gradient(ellipse 120% 90% at 50% 0%, rgba(122, 18, 26, 0.55) 0%, rgba(30, 8, 10, 0.92) 62%, rgba(12, 4, 4, 0.97) 100%);
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 226, 170, 0.16),
+    inset 0 -2px 10px rgba(0, 0, 0, 0.85);
+  transition: var(--transition-smooth);
   cursor: default;
 }
 
+.foe:hover {
+  transform: translateY(-2px);
+  border-color: rgba(212, 175, 55, 0.68);
+}
+
+.foe.is-active {
+  /* 輪到誰行動：微幅上浮（只動 transform，不影響版面） */
+  transform: translateY(-3px);
+  border-color: var(--blood-bright);
+  box-shadow:
+    0 0 0 1px rgba(255, 60, 60, 0.35),
+    0 0 26px rgba(185, 28, 28, 0.6),
+    inset 0 1px 0 rgba(255, 200, 200, 0.2),
+    inset 0 -2px 10px rgba(0, 0, 0, 0.85);
+}
+
+.foe.is-selected {
+  transform: translateY(-3px);
+  border-color: var(--gold);
+  box-shadow:
+    0 0 0 2px rgba(212, 175, 55, 0.55),
+    0 0 30px rgba(212, 175, 55, 0.42),
+    inset 0 1px 0 rgba(255, 226, 170, 0.2);
+}
+
+.foe.is-dead {
+  filter: grayscale(1) brightness(0.45);
+  border-color: rgba(120, 120, 120, 0.3);
+}
+
 .foe__name {
-  max-width: 100%;
-  font-size: 15px;
+  font-family: var(--font-display);
+  font-size: 0.92rem;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.05em;
+  color: var(--ink);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .foe__items {
-  font-size: 12px;
-  color: var(--muted);
+  font-family: var(--font-num);
+  font-size: 0.7rem;
+  color: var(--ink-mute);
 }
 
 .foe__tag {
   position: absolute;
-  top: 6px;
+  top: -9px;
   right: 8px;
-  font-size: 11px;
-  color: var(--muted);
+  padding: 0.1rem 0.45rem;
+  font-family: var(--font-num);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  color: #1a0303;
+  background: linear-gradient(180deg, #ff8a8a, var(--blood));
+  border-radius: 999px;
+  box-shadow: 0 0 14px rgba(255, 60, 60, 0.7);
 }
 
 .foe.is-active .foe__tag {
-  color: #fda4af;
+  animation: tagPulse 1.2s ease-in-out infinite;
 }
 
-/* ---- 中央：槍 ---- */
+@keyframes tagPulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 60, 60, 0.5); }
+  50% { box-shadow: 0 0 22px rgba(255, 60, 60, 0.95); }
+}
+
+/* 生命值：命格燈號 / 籌碼刻度 */
+.hearts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  min-height: 22px;
+}
+
+.heart {
+  display: inline-block;
+  font-size: 1.02rem;
+  line-height: 1;
+  filter: drop-shadow(0 0 7px rgba(255, 60, 60, 0.85)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));
+  /* 血量變化：只動 transform / opacity，避免重排 */
+  transition: var(--transition-smooth);
+  will-change: transform, opacity;
+}
+
+.heart.is-lost {
+  filter: grayscale(1) brightness(0.55) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));
+  opacity: 0.55;
+  transform: scale(0.9);
+}
+
+.hearts.is-hit {
+  animation: heartBreak 0.5s ease-out;
+}
+
+@keyframes heartBreak {
+  0% { transform: scale(1); }
+  22% { transform: scale(1.24); filter: brightness(1.8) saturate(1.5); }
+  60% { transform: scale(0.94); }
+  100% { transform: scale(1); }
+}
+
+/* ------------------------------------------------------------------ 中央：彈巢 + 槍 */
 .row--gun {
   position: relative;
-  display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
+  gap: clamp(0.1rem, 0.6vh, 0.35rem);
   min-height: 0;
+  overflow: hidden;
+}
+
+/* 中央賭桌圓圈底紋：讓槍械區有桌面焦點感 */
+.row--gun::before {
+  content: "";
+  position: absolute;
+  width: min(430px, 78vw);
+  aspect-ratio: 1;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  background:
+    radial-gradient(circle, rgba(212, 175, 55, 0.10) 0%, rgba(120, 20, 20, 0.06) 46%, transparent 70%);
+  box-shadow:
+    inset 0 0 0 1px rgba(212, 175, 55, 0.16),
+    inset 0 0 0 12px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 13px rgba(212, 175, 55, 0.10);
+  z-index: -1;
 }
 
 .turn {
-  font-size: clamp(15px, 2.2vw, 19px);
+  font-family: var(--font-display);
+  font-size: clamp(0.92rem, 2.6vw, 1.16rem);
   font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+  letter-spacing: 0.1em;
   text-align: center;
-  transition: color 0.2s ease, text-shadow 0.2s ease;
+  padding: 0.28rem 1rem;
+  border-radius: 999px;
+  color: var(--ink-dim);
+  transition: var(--transition-smooth);
 }
 
 .turn.is-mine {
-  color: #fff;
-  text-shadow: 0 0 18px rgba(255, 71, 87, 0.9), 0 0 42px rgba(255, 71, 87, 0.5);
+  color: var(--gold-bright);
+  text-shadow: 0 0 18px rgba(246, 226, 122, 0.75);
 }
 
 .turn.is-theirs {
-  color: #fda4af;
+  color: #ff9d9d;
+  text-shadow: 0 0 16px rgba(255, 60, 60, 0.5);
 }
 
+/* 本輪彈藥庫：開局 / 換輪時展開，倒數結束收起。
+   用絕對定位疊在中央區，不佔用版面高度，矮螢幕也不會把按鈕推出畫面。 */
+.cylinder {
+  position: absolute;
+  top: clamp(0.2rem, 1vh, 0.6rem);
+  left: 50%;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  opacity: 0;
+  transform: translate(-50%, -6px) scale(0.96);
+  transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.2, 1.4, 0.5, 1);
+  pointer-events: none;
+}
+
+.cylinder.is-open {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+.cylinder__ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.42rem 0.95rem 0.5rem;
+  border-radius: 10px;
+  border: 1px solid rgba(212, 175, 55, 0.5);
+  background: linear-gradient(180deg, rgba(48, 16, 18, 0.96) 0%, rgba(14, 5, 6, 0.98) 100%);
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(255, 226, 170, 0.16);
+}
+
+.ammo-bank__label {
+  font-family: var(--font-num);
+  font-size: 0.6rem;
+  letter-spacing: 0.28em;
+  color: var(--ink-mute);
+}
+
+.ammo-bank__row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ammo-bank__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.5);
+  font-size: 0.74rem;
+}
+
+.ammo-bank__chip b {
+  font-weight: 700;
+  font-family: var(--font-body);
+}
+
+.ammo-bank__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.ammo-bank__chip--live {
+  color: #ffb3a0;
+  border-color: rgba(255, 90, 60, 0.5);
+}
+
+.ammo-bank__chip--live .ammo-bank__dot {
+  background: radial-gradient(circle at 35% 30%, #ffd7a8, #d9531e 60%, #5a1508);
+  box-shadow: 0 0 10px rgba(255, 100, 40, 0.85);
+}
+
+.ammo-bank__chip--blank {
+  color: #b9cbd8;
+  border-color: rgba(160, 190, 210, 0.42);
+}
+
+.ammo-bank__chip--blank .ammo-bank__dot {
+  background: radial-gradient(circle at 35% 30%, #f4f8fb, #8e9bab 60%, #232930);
+  box-shadow: 0 0 10px rgba(190, 215, 235, 0.7);
+}
+
+.ammo-bank__n {
+  font-family: var(--font-num);
+  font-size: 0.92rem;
+  color: var(--gold-bright);
+  text-shadow: 0 0 10px rgba(246, 226, 122, 0.6);
+}
+
+/* 完整左輪：待機呼吸 / 瞄準 / 後座 / 換輪上抬轉向 */
 .gun {
-  font-size: clamp(74px, 15vh, 132px);
-  line-height: 1;
-  user-select: none;
-  filter: drop-shadow(0 14px 24px rgba(0, 0, 0, 0.6));
-  transform-origin: 70% 80%;
-  animation: gunIdle 4.6s ease-in-out infinite;
+  /* 橫向散彈槍：寬度吃滿中央區，高度自動，不超出可用空間 */
+  width: min(100%, clamp(280px, 62vw, 620px));
+  max-height: 100%;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.85)) drop-shadow(0 0 14px rgba(212, 175, 55, 0.18));
+  transform-origin: 62% 50%;
+  animation: gunIdle 3.8s ease-in-out infinite;
+}
+
+.gun svg {
+  width: 100%;
+  height: auto;
+  max-height: 100%;
+  overflow: visible;
+}
+
+/* 換輪：槍口上抬轉向左上，像真的在拉槍機 */
+.gun.is-reloading {
+  animation: gunReload 1.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes gunReload {
+  0% { transform: rotate(0deg) translateY(0) scale(1); }
+  16% { transform: rotate(26deg) translateY(-10px) scale(1.04); }
+  30% { transform: rotate(30deg) translateY(-12px) scale(1.05); }
+  62% { transform: rotate(26deg) translateY(-8px) scale(1.04); }
+  84% { transform: rotate(8deg) translateY(-2px) scale(1.01); }
+  100% { transform: rotate(0deg) translateY(0) scale(1); }
+}
+
+/* 泵動護木：換彈時前後抽送 */
+.gun__pump.is-pumping {
+  animation: gunPump 0.5s ease-in-out 2;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes gunPump {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(-26px); }
+}
+
+/* 槍枝本身的開火後座 */
+.gun.is-recoil {
+  animation: gunRecoil 0.34s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+/* 舊的彈巢旋轉動畫已不適用（改成散彈槍的泵動護木） */
+.gun__cylinder.is-spinning {
+  animation: none;
+}
+
+.gun__muzzle {
+  transition: opacity 0.1s ease;
+}
+
+@keyframes gunIdle {
+  0%, 100% { transform: translateY(0) rotate(-1deg); }
+  50% { transform: translateY(-4px) rotate(1deg); }
 }
 
 .gun.is-aiming {
-  animation: gunAim 0.5s ease;
+  animation: gunAim 0.36s ease-out;
 }
 
 .gun.is-live {
-  filter: drop-shadow(0 0 26px rgba(255, 71, 87, 0.95));
+  filter: drop-shadow(0 0 26px rgba(255, 90, 40, 0.9)) drop-shadow(0 10px 20px rgba(0, 0, 0, 0.85));
 }
 
 .gun.is-blank {
-  filter: drop-shadow(0 0 22px rgba(56, 189, 248, 0.75));
+  filter: drop-shadow(0 0 20px rgba(45, 226, 255, 0.6)) drop-shadow(0 10px 20px rgba(0, 0, 0, 0.85));
 }
 
 .gun.is-recoil {
-  animation: gunRecoil 0.42s cubic-bezier(0.32, 1.6, 0.5, 1);
+  animation: gunRecoil 0.34s cubic-bezier(0.36, 0.07, 0.19, 0.97);
 }
 
+@keyframes gunAim {
+  0% { transform: rotate(-2deg); }
+  45% { transform: rotate(-16deg) scale(1.06); }
+  100% { transform: rotate(-2deg); }
+}
+
+@keyframes gunRecoil {
+  0% { transform: translateY(0) rotate(0deg); }
+  22% { transform: translateY(-16px) rotate(9deg) scale(1.08); }
+  55% { transform: translateY(4px) rotate(-5deg); }
+  100% { transform: translateY(0) rotate(0); }
+}
+
+/* DeepSeek 娘台詞：羊皮紙 / 燙金對話框 */
 .bubble {
-  margin: 0;
+  position: relative;
   max-width: min(560px, 88vw);
-  padding: 9px 15px;
-  font-size: 14px;
-  line-height: 1.5;
+  margin: 0.1rem 0 0;
+  padding: 0.55rem 0.95rem;
+  font-size: 0.88rem;
+  line-height: 1.6;
   text-align: center;
-  color: #ffe4ea;
-  background: rgba(120, 12, 34, 0.6);
-  border: 1px solid rgba(255, 71, 87, 0.4);
-  border-radius: 12px;
-  animation: bubblePop 0.28s ease;
+  color: #ffeedd;
+  border-radius: 10px;
+  border: 1px solid rgba(212, 175, 55, 0.5);
+  background: linear-gradient(180deg, rgba(46, 18, 20, 0.96) 0%, rgba(16, 6, 7, 0.97) 100%);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 226, 170, 0.14);
+  animation: bubblePop 0.26s cubic-bezier(0.2, 1.4, 0.5, 1);
+}
+
+.bubble[hidden] {
+  display: none;
+}
+
+@keyframes bubblePop {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: none; }
 }
 
 .hint {
   margin: 0;
-  min-height: 18px;
-  font-size: 13px;
-  color: var(--muted);
+  min-height: 1.15em;
+  font-family: var(--font-num);
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
   text-align: center;
+  color: var(--ink-mute);
 }
 
-/* ---- 下半：自己 + 道具欄 ---- */
+/* ------------------------------------------------------------------ 自己的席位 */
 .row--me {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
-  gap: 12px;
   align-items: stretch;
+  gap: clamp(0.5rem, 1.6vw, 1rem);
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .me {
+  flex: 1 1 46%;
+  min-width: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 6px;
-  padding: 12px 14px;
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(147, 197, 253, 0.28);
-  border-radius: 14px;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.7rem 0.85rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  background:
+    radial-gradient(ellipse 130% 100% at 50% 0%, rgba(150, 22, 30, 0.5) 0%, rgba(34, 10, 12, 0.94) 60%, rgba(12, 4, 5, 0.98) 100%);
+  box-shadow:
+    0 14px 32px rgba(0, 0, 0, 0.75),
+    inset 0 1px 0 rgba(255, 226, 170, 0.16),
+    inset 0 -2px 12px rgba(0, 0, 0, 0.9);
+  transition: var(--transition-smooth);
 }
 
 .me.is-turn {
-  border-color: rgba(147, 197, 253, 0.85);
-  box-shadow: 0 0 26px -10px rgba(59, 130, 246, 0.95);
+  border-color: var(--gold);
+  box-shadow:
+    0 0 0 1px rgba(212, 175, 55, 0.5),
+    0 0 30px rgba(212, 175, 55, 0.45),
+    inset 0 1px 0 rgba(255, 226, 170, 0.22);
 }
 
 .me.is-dead {
-  opacity: 0.45;
-  filter: grayscale(0.8);
+  filter: grayscale(0.9) brightness(0.55);
+}
+
+.me.is-hit {
+  animation: meHit 0.5s ease-out;
+}
+
+@keyframes meHit {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-8px); }
+  35% { transform: translateX(7px); }
+  55% { transform: translateX(-5px); }
+  75% { transform: translateX(3px); }
 }
 
 .me__head {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 0.55rem;
   flex-wrap: wrap;
+  justify-content: center;
 }
 
 .me__name {
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: var(--gold-bright);
+  text-shadow: 0 0 14px rgba(246, 226, 122, 0.4);
 }
 
 .me__status {
-  font-size: 12px;
-  color: var(--muted);
+  display: inline-flex;
+  gap: 0.32rem;
+  flex-wrap: wrap;
+  font-family: var(--font-num);
+  font-size: 0.7rem;
+  color: var(--ink-mute);
 }
 
 .me__status .tag {
-  display: inline-block;
-  margin-right: 6px;
-  padding: 2px 8px;
+  padding: 0.1rem 0.42rem;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
-  color: #ffd9de;
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--ink-dim);
 }
 
 .me__intel {
   margin: 0;
-  font-size: 12px;
-  color: var(--blank);
+  padding: 0.32rem 0.6rem;
+  font-family: var(--font-num);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: #ffd9a0;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 200, 120, 0.3);
+  background: rgba(60, 30, 8, 0.55);
 }
 
-.hearts {
-  display: flex;
-  gap: 2px;
-  font-size: 20px;
-  line-height: 1;
+.me__intel[hidden] {
+  display: none;
 }
 
-.heart.is-lost {
-  opacity: 0.3;
-  filter: grayscale(1);
-}
-
-.hearts.is-hit {
-  animation: heartBreak 0.5s ease;
-}
-
+/* ------------------------------------------------------------------ 道具欄：木盒 / 鐵盒凹槽 */
 .items {
+  flex: 1 1 54%;
+  min-width: 0;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
-  gap: 8px;
-  align-content: center;
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--line);
-  border-radius: 14px;
+  /* 8 格固定欄位：桌面 4×2、手機 4×2，不足的格子由 client.js 補「空」*/
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(clamp(38px, 7vh, 58px), 1fr);
+  gap: clamp(4px, 1vw, 8px);
+  padding: clamp(0.42rem, 1.2vw, 0.7rem);
+  border-radius: 12px;
+  border: 1px solid rgba(212, 175, 55, 0.42);
+  /* 木盒外框 */
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(92, 56, 26, 0.55) 0px,
+      rgba(92, 56, 26, 0.55) 3px,
+      rgba(0, 0, 0, 0.35) 3px,
+      rgba(0, 0, 0, 0.35) 6px
+    ),
+    linear-gradient(180deg, #3a2414 0%, #1d1109 100%);
+  box-shadow:
+    0 14px 32px rgba(0, 0, 0, 0.8),
+    inset 0 2px 0 rgba(255, 210, 140, 0.16),
+    inset 0 -3px 10px rgba(0, 0, 0, 0.9);
 }
 
+/* 單一格：鐵盒凹槽 */
 .slot {
-  font: inherit;
-  color: var(--text);
+  position: relative;
+  min-height: 58px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  min-height: 62px;
-  padding: 8px 6px;
-  border-radius: 11px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid var(--line);
+  gap: 0.1rem;
+  padding: 0.34rem 0.2rem;
+  font-family: var(--font-body);
+  color: var(--ink);
   cursor: pointer;
-  transition: transform 0.12s ease, background 0.16s ease, border-color 0.16s ease;
+  border-radius: 6px;
+  border: 1px solid rgba(212, 175, 55, 0.34);
+  background: var(--slot-bg);
+  box-shadow:
+    inset 0 3px 6px rgba(0, 0, 0, 0.95),
+    inset 0 -1px 0 rgba(255, 220, 150, 0.1),
+    0 1px 0 rgba(255, 220, 150, 0.08);
+  transition: var(--transition-smooth);
 }
 
 .slot:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.3);
-  transform: translateY(-2px);
+  border-color: var(--gold);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.9),
+    0 0 16px rgba(212, 175, 55, 0.38);
+}
+
+.slot:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: inset 0 4px 8px rgba(0, 0, 0, 0.98);
 }
 
 .slot:disabled {
-  opacity: 0.45;
   cursor: not-allowed;
+  opacity: 0.5;
+  filter: grayscale(0.5);
 }
 
+/* 空格凹槽 */
 .slot--empty {
-  background: rgba(255, 255, 255, 0.02);
-  border-style: dashed;
-  color: rgba(243, 237, 245, 0.28);
-  font-size: 12px;
   cursor: default;
+  color: rgba(139, 124, 99, 0.45);
+  font-family: var(--font-num);
+  font-size: 0.66rem;
+  letter-spacing: 0.2em;
+  border-style: dashed;
+  border-color: rgba(212, 175, 55, 0.16);
+  box-shadow: inset 0 3px 8px rgba(0, 0, 0, 0.95);
 }
 
+/* 滿血時純回血道具：標記為浪費 */
 .slot--waste {
-  opacity: 0.3;
-  filter: grayscale(1);
+  border-color: rgba(120, 120, 120, 0.35);
+}
+
+.slot--waste::after {
+  content: "滿";
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 0.56rem;
+  color: #ff9d9d;
 }
 
 .slot__icon {
-  font-size: 22px;
+  font-size: 1.28rem;
   line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.8));
 }
 
 .slot__name {
-  font-size: 11px;
-  line-height: 1.25;
-  text-align: center;
-  color: rgba(243, 237, 245, 0.8);
+  font-size: 0.64rem;
+  color: var(--ink-dim);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* ------------------------------------------------------------ 底部按鈕 */
+/* ------------------------------------------------------------------ 道具選中態 */
+/* 第一次點擊＝選中（燙金高亮），第二次才使用 */
+.slot.is-armed {
+  border-color: var(--gold-bright);
+  background: linear-gradient(180deg, rgba(80, 58, 18, 0.95) 0%, rgba(30, 18, 8, 1) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(246, 226, 122, 0.8),
+    0 0 0 2px rgba(212, 175, 55, 0.4),
+    0 0 18px rgba(212, 175, 55, 0.55);
+  transform: translateY(-2px);
+}
+
+.slot.is-armed .slot__name {
+  color: var(--gold-bright);
+}
+
+/* 說明卡：預設浮在道具欄上方（觸控裝置），桌面固定於賭桌中央上方 */
+.item-card {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+  transform: translateX(-50%);
+  z-index: 125;
+  width: min(340px, 92vw);
+  padding: 0.7rem 0.8rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--gold);
+  background: #14100a;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.9);
+  animation: cardIn 0.16s ease-out;
+  text-align: center;
+}
+
+.item-card.is-open {
+  display: block;
+}
+
+@keyframes cardIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to { opacity: 1; transform: translateX(-50%); }
+}
+
+.item-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.3rem;
+}
+
+.item-card__icon {
+  font-size: 1.15rem;
+}
+
+.item-card__name {
+  font-family: var(--font-display);
+  font-size: 0.96rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--gold-bright);
+}
+
+.item-card__chance {
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid rgba(246, 226, 122, 0.5);
+  font-family: var(--font-num);
+  font-size: 0.66rem;
+  color: var(--gold-bright);
+  background: rgba(90, 68, 16, 0.5);
+}
+
+.item-card__desc {
+  margin: 0.2rem 0 0.4rem;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--ink-dim);
+}
+
+.item-card__warn {
+  margin: 0 0 0.4rem;
+  font-size: 0.74rem;
+  color: #ff9d9d;
+}
+
+.item-card__use {
+  width: 100%;
+  min-height: 44px;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #1a1206;
+  cursor: pointer;
+  border: 1px solid var(--gold-bright);
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.7);
+  touch-action: manipulation;
+}
+
+.item-card__use:active {
+  transform: translateY(3px);
+  box-shadow: none;
+}
+
+.item-card__hint {
+  margin: 0.35rem 0 0;
+  font-family: var(--font-num);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  color: var(--ink-mute);
+}
+
+/* ------------------------------------------------------------------ 動作列 */
+/* 按鈕列固定佔住底部：不捲動、不被壓縮，永遠在同一個視窗內 */
 .actions {
+  position: relative;
+  flex: 0 0 auto;
+  z-index: 5;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-top: 4px;
+  gap: clamp(0.25rem, 0.9vh, 0.5rem);
+  padding: clamp(0.35rem, 1.2vh, 0.7rem) clamp(0.7rem, 3vw, 1.4rem)
+    calc(clamp(0.4rem, 1.4vh, 0.8rem) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid rgba(212, 175, 55, 0.24);
+  background: linear-gradient(180deg, rgba(10, 4, 4, 0.72) 0%, rgba(5, 2, 2, 0.96) 60%);
+}
+
+.actions__row {
+  display: flex;
+  gap: clamp(0.5rem, 1.6vw, 1rem);
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .targets {
   display: flex;
-  gap: 8px;
-  justify-content: center;
   flex-wrap: wrap;
-}
-
-.targets button {
-  font: inherit;
-  font-size: 13px;
-  color: var(--text);
-  padding: 7px 14px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--line);
-  cursor: pointer;
-}
-
-.targets button.is-active {
-  background: rgba(251, 191, 36, 0.2);
-  border-color: rgba(251, 191, 36, 0.75);
-  color: #fde68a;
-}
-
-.actions__row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  width: 100%;
-  max-width: 760px;
+  justify-content: center;
+  gap: 0.4rem;
+  max-width: 900px;
   margin: 0 auto;
 }
 
-/* ------------------------------------------------------------ 開局提示 */
+.targets[hidden] {
+  display: none;
+}
+
+.targets button {
+  font-family: var(--font-num);
+  font-size: 0.78rem;
+  padding: 0.34rem 0.7rem;
+  cursor: pointer;
+  color: var(--ink-dim);
+  border-radius: 999px;
+  border: 1px solid rgba(212, 175, 55, 0.32);
+  background: linear-gradient(180deg, rgba(40, 26, 16, 0.9), rgba(14, 8, 5, 0.95));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  transition: var(--transition-smooth);
+}
+
+.targets button:hover {
+  border-color: var(--gold);
+  color: var(--ink);
+}
+
+.targets button.is-active {
+  color: #1a0303;
+  font-weight: 700;
+  border-color: var(--gold-bright);
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+  box-shadow: 0 0 18px rgba(212, 175, 55, 0.65);
+}
+
+/* ------------------------------------------------------------------ 裝填：實體霰彈槽 Shell Rack */
 .reveal {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 110;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: radial-gradient(ellipse 74% 64% at 50% 50%, rgba(48, 0, 5, 0.78) 0%, rgba(3, 0, 1, 0.92) 100%);
+}
+
+/* 卡片本身不再有金邊圓角：改成深色鐵框 + 暗木凹槽的長條彈藥架 */
+.reveal__card.rack {
+  position: relative;
+  width: min(880px, 96vw);
+  padding: 0;
+  border-radius: 6px;
+  border: 2px solid #3a3f47;
+  background:
+    linear-gradient(180deg, #2b2f36 0%, #14181d 46%, #0a0d11 100%);
+  box-shadow:
+    0 30px 70px rgba(0, 0, 0, 0.92),
+    0 0 0 1px rgba(0, 0, 0, 0.9),
+    inset 0 2px 0 rgba(160, 175, 190, 0.22),
+    inset 0 -3px 12px rgba(0, 0, 0, 0.95);
+  animation: rackIn 0.34s cubic-bezier(0.2, 1.3, 0.5, 1);
+  overflow: hidden;
+}
+
+/* 收起：向下滑出淡出 */
+.rack.is-closing {
+  animation: rackClose 0.28s ease-in forwards;
+}
+
+@keyframes rackIn {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes rackClose {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(26px); }
+}
+
+/* 金屬銘牌：只放最精簡的文字 */
+.rack__plate {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(6, 4, 9, 0.82);
-  backdrop-filter: blur(6px);
+  gap: 0.55rem;
+  padding: 0.42rem 0.8rem;
+  border-bottom: 1px solid rgba(140, 155, 170, 0.24);
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 2px, transparent 2px 5px),
+    linear-gradient(180deg, #3d444d 0%, #22272e 55%, #12161a 100%);
+  font-family: var(--font-num);
+  font-size: 0.68rem;
+  letter-spacing: 0.2em;
+  color: #b9c4d0;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.9);
 }
 
-.reveal__card {
-  width: min(90vw, 460px);
-  padding: 26px 24px 20px;
-  text-align: center;
-  background: linear-gradient(180deg, rgba(40, 12, 24, 0.98), rgba(14, 8, 16, 0.98));
-  border: 1px solid rgba(255, 71, 87, 0.4);
-  border-radius: 20px;
-  box-shadow: 0 30px 80px -30px rgba(255, 71, 87, 0.8);
-  animation: revealPop 0.32s ease;
+.rack__round b {
+  color: var(--gold);
+  font-size: 0.86rem;
 }
 
-.reveal__eyebrow {
-  font-size: 12px;
-  letter-spacing: 0.18em;
-  color: var(--muted);
+.rack__sep {
+  width: 1px;
+  height: 12px;
+  background: rgba(160, 175, 190, 0.35);
 }
 
-.reveal__counts {
+.rack__tag b {
+  font-size: 0.86rem;
+}
+
+.rack__tag--live {
+  color: #ff8f7a;
+}
+
+.rack__tag--blank {
+  color: #9dbcd6;
+}
+
+.rack__dot {
+  color: rgba(160, 175, 190, 0.5);
+}
+
+/* 彈藥架 + 進彈口 */
+.rack__body {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  gap: 0;
+  padding: clamp(0.6rem, 2vw, 1.1rem) clamp(0.6rem, 2vw, 1.2rem);
+}
+
+/* 暗木凹槽長條 */
+.rack__slots {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 4px;
+  border: 1px solid rgba(120, 90, 45, 0.5);
+  /* 暗木紋 + 內部凹槽陰影 */
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(120, 78, 36, 0.30) 0 3px,
+      rgba(0, 0, 0, 0.30) 3px 7px
+    ),
+    linear-gradient(180deg, #32200f 0%, #1c1108 52%, #0d0704 100%);
+  box-shadow:
+    inset 0 5px 12px rgba(0, 0, 0, 0.95),
+    inset 0 -2px 0 rgba(180, 130, 70, 0.22),
+    0 1px 0 rgba(0, 0, 0, 0.9);
+}
+
+/* 子彈排列的凹槽 */
+.rack__groove {
+  display: flex;
+  align-items: flex-end;
   justify-content: center;
-  gap: 12px;
-  margin: 14px 0 16px;
-  font-size: clamp(17px, 4vw, 21px);
-  font-weight: 700;
+  gap: clamp(3px, 0.8vw, 7px);
+  min-height: 92px;
+  position: relative;
 }
 
-.reveal__live b {
-  font-size: 1.5em;
-  color: var(--live);
-  text-shadow: 0 0 20px rgba(255, 71, 87, 0.85);
+/* 凹槽底部的定位孔 */
+.rack__groove::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 8px;
+  border-radius: 4px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.85) 0 14px,
+    rgba(90, 60, 30, 0.35) 14px 18px
+  );
+  opacity: 0.65;
+  pointer-events: none;
 }
 
-.reveal__blank b {
-  font-size: 1.5em;
-  color: var(--blank);
-  text-shadow: 0 0 20px rgba(56, 189, 248, 0.8);
+.rack__gap {
+  width: clamp(8px, 2vw, 18px);
+  height: 1px;
 }
 
-.reveal__slash {
-  opacity: 0.4;
+/* 12 號霰彈殼 */
+/* ⚡ 效能：子彈只動 transform / opacity，全部走 GPU 合成層。
+   寬高由 CSS 固定，動畫期間不改任何會觸發 layout 的屬性。 */
+.shellfx {
+  position: relative;
+  display: block;
+  width: clamp(20px, 3.1vw, 30px);
+  height: clamp(58px, 8vw, 78px);
+  opacity: 0;
+  transform: translate3d(0, 16px, 0) scale(0.94);
+  will-change: transform, opacity;
+  backface-visibility: hidden;
 }
 
-.reveal__bar {
-  height: 4px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
+/* 亮起：延遲完全由 CSS 變數決定（--lit-delay），不再由 JS 逐顆設 setTimeout。
+   animation-fill-mode: both 讓 0% 之前的幀維持隱藏，省掉 JS 先設 opacity 的步驟。 */
+
+@keyframes shellPop {
+  0% { opacity: 0; transform: translate3d(0, 16px, 0) scale(0.94); }
+  62% { opacity: 1; transform: translate3d(0, -9px, 0) scale(1.05); }
+  100% { opacity: 1; transform: translate3d(0, -4px, 0) scale(1); }
+}
+
+/* 彈身（圓柱） */
+.shellfx__tube {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 12%;
+  bottom: 0;
+  border-radius: 3px 3px 2px 2px;
   overflow: hidden;
+}
+
+/* 圓柱高光條 */
+.shellfx__shine {
+  position: absolute;
+  left: 18%;
+  top: 14%;
+  width: 22%;
+  bottom: 6%;
+  border-radius: 2px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.08));
+  pointer-events: none;
+}
+
+/* 彈頭（上方的壓褶收口） */
+.shellfx__cap {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 0;
+  height: 15%;
+  border-radius: 50% 50% 22% 22%;
+}
+
+/* 底火金屬環 */
+.shellfx__primer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 15%;
+  border-radius: 0 0 2px 2px;
+}
+
+/* ── 實彈：亮紅彈身 + 黃銅底火 ── */
+/* 靜態發光（不隨動畫變化，不會每幀重繪） */
+.shellfx--live .shellfx__tube {
+  box-shadow: 0 0 10px rgba(255, 60, 40, 0.55);
+}
+
+.shellfx--live .shellfx__tube {
+  background: linear-gradient(90deg, #5e0d08 0%, #b81f10 26%, #f0432a 44%, #c02312 68%, #4d0a06 100%);
+  box-shadow: inset 0 -4px 7px rgba(0, 0, 0, 0.55);
+}
+
+.shellfx--live .shellfx__cap {
+  background: linear-gradient(180deg, #ff8a72 0%, #c0200f 70%, #6d0c06 100%);
+}
+
+.shellfx--live .shellfx__primer {
+  background: linear-gradient(180deg, #ffe9a6 0%, #d4af37 45%, #8a6416 100%);
+  border-top: 1px solid rgba(0, 0, 0, 0.55);
+}
+
+/* ── 空包：深藍灰彈身 + 銀色底火 ── */
+.shellfx--blank .shellfx__tube {
+  box-shadow: 0 0 9px rgba(120, 175, 225, 0.45);
+}
+
+.shellfx--blank .shellfx__tube {
+  background: linear-gradient(90deg, #1b242e 0%, #35505f 26%, #5b7f92 46%, #2f4a58 70%, #141b22 100%);
+  box-shadow: inset 0 -4px 7px rgba(0, 0, 0, 0.6);
+}
+
+.shellfx--blank .shellfx__cap {
+  background: linear-gradient(180deg, #7fa2b6 0%, #2c4451 72%, #16222a 100%);
+}
+
+.shellfx--blank .shellfx__primer {
+  background: linear-gradient(180deg, #f4f8fb 0%, #c3ced8 42%, #7f8b96 100%);
+  border-top: 1px solid rgba(0, 0, 0, 0.55);
+}
+
+/* ── 推進槍膛：向上彈起後向右滑入進彈口 ── */
+/* 進膛：接在亮起之後由 --fire-delay 排隊，一次寫入即可。
+   .is-racking 一加上，所有子彈同時開始「亮起 → 進膛」兩段動畫，
+   兩段的延遲各自由 CSS 變數決定，不需要任何 JS 計時器。 */
+.is-racking .shellfx {
+  animation:
+    shellPop 0.34s cubic-bezier(0.2, 1.6, 0.45, 1) both var(--lit-delay, 0ms),
+    shellSlot 0.5s cubic-bezier(0.4, 0, 0.8, 1) both var(--fire-delay, 1400ms);
+}
+
+@keyframes shellSlot {
+  0% { opacity: 1; transform: translate3d(0, -4px, 0) scale(1); }
+  28% { opacity: 1; transform: translate3d(6px, -26px, 0) scale(1.06); }
+  100% { opacity: 0; transform: translate3d(190px, -36px, 0) scale(0.72); }
+}
+
+/* 進彈口機匣 */
+.rack__receiver {
+  flex: 0 0 auto;
+  width: clamp(78px, 13vw, 128px);
+  margin-left: clamp(-8px, -1vw, -2px);
+  line-height: 0;
+}
+
+.rack__receiver svg {
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(-6px 8px 14px rgba(0, 0, 0, 0.85));
+}
+
+/* 進彈瞬間：微震 */
+.rack__receiver.is-slotting {
+  animation: receiverKick 0.16s ease-in-out;
+}
+
+@keyframes receiverKick {
+  0%, 100% { transform: translateX(0); }
+  40% { transform: translateX(-4px); }
+  70% { transform: translateX(2px); }
+}
+
+.rack__port-glow {
+  transition: opacity 0.1s ease;
+}
+
+/* 底部的細進度條：只留一條金屬線，不搶視覺 */
+.reveal__bar {
+  height: 2px;
+  margin: 0 0.8rem 0.5rem;
+  border-radius: 1px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.8);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.9);
 }
 
 .reveal__bar i {
   display: block;
-  height: 100%;
   width: 100%;
+  height: 100%;
+  transform: scaleX(0);
   transform-origin: left center;
-  background: linear-gradient(90deg, var(--live), var(--gold));
+  will-change: transform;
+  background: linear-gradient(90deg, #6d2020, #c0603a, var(--gold));
 }
 
 .reveal__foot {
-  margin-top: 12px;
-  font-size: 12px;
-  color: var(--muted);
+  margin: 0 0 0.5rem;
+  text-align: center;
+  font-family: var(--font-num);
+  font-size: 0.64rem;
+  letter-spacing: 0.16em;
+  color: #6f7a86;
 }
 
-/* ------------------------------------------------------------ 結算 */
+/* ------------------------------------------------------------------ 結算 */
 .result {
   position: fixed;
   inset: 0;
-  z-index: 70;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(6, 4, 9, 0.86);
-  backdrop-filter: blur(8px);
+  z-index: 130;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: radial-gradient(ellipse 70% 60% at 50% 50%, rgba(50, 0, 6, 0.88) 0%, rgba(3, 0, 1, 0.96) 100%);
+}
+
+.result[hidden] {
+  display: none;
 }
 
 .result__card {
-  width: min(90vw, 420px);
-  padding: 26px 24px;
+  width: min(420px, 94vw);
+  padding: 1.5rem 1.35rem;
   text-align: center;
-  background: rgba(18, 11, 20, 0.98);
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  animation: revealPop 0.3s ease;
+  border-radius: 14px;
+  border: 2px solid var(--gold);
+  background: radial-gradient(ellipse 120% 90% at 50% 0%, rgba(70, 14, 18, 0.95) 0%, rgba(16, 5, 6, 0.98) 72%, rgba(6, 2, 2, 1) 100%);
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.9), 0 0 40px rgba(212, 175, 55, 0.24);
+  animation: revealPop 0.34s cubic-bezier(0.2, 1.4, 0.5, 1);
 }
 
 .result__title {
-  margin: 0 0 10px;
-  font-size: 26px;
-  letter-spacing: 0.06em;
+  margin: 0 0 0.5rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 5vw, 2rem);
+  font-weight: 900;
+  letter-spacing: 0.1em;
 }
 
 .result__title.is-win {
-  color: #86efac;
-  text-shadow: 0 0 24px rgba(134, 239, 172, 0.6);
+  color: var(--gold-bright);
+  text-shadow: 0 0 26px rgba(246, 226, 122, 0.65);
 }
 
 .result__title.is-lose {
-  color: #fca5a5;
-  text-shadow: 0 0 24px rgba(252, 165, 165, 0.5);
+  color: #ff6b6b;
+  text-shadow: 0 0 26px rgba(255, 60, 60, 0.55);
 }
 
 .result__text {
-  margin: 0 0 18px;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--muted);
+  margin: 0 0 1rem;
+  font-family: var(--font-num);
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: var(--ink-dim);
 }
 
 .result__actions {
   display: flex;
-  gap: 10px;
   justify-content: center;
+  gap: 0.6rem;
 }
 
-/* ------------------------------------------------------------ 動畫 */
-@keyframes gunIdle {
-  0%,
-  100% {
-    transform: rotate(-6deg) translateY(0);
-  }
-  50% {
-    transform: rotate(-4deg) translateY(-4px);
-  }
-}
-
-@keyframes gunAim {
-  0% {
-    transform: rotate(-6deg) scale(1);
-  }
-  45% {
-    transform: rotate(-14deg) scale(1.06);
-  }
-  100% {
-    transform: rotate(-6deg) scale(1);
-  }
-}
-
-@keyframes gunRecoil {
-  0% {
-    transform: rotate(-6deg) translateX(0);
-  }
-  22% {
-    transform: rotate(-13deg) translateX(-22px) translateY(8px);
-  }
-  55% {
-    transform: rotate(-2deg) translateX(8px);
-  }
-  100% {
-    transform: rotate(-6deg) translateX(0);
-  }
-}
-
-@keyframes bubblePop {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes heartBreak {
-  0% {
-    transform: scale(1);
-  }
-  30% {
-    transform: scale(1.16);
-    filter: brightness(1.5) saturate(1.4);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
-@keyframes revealPop {
-  from {
-    opacity: 0;
-    transform: scale(0.92) translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
+/* ------------------------------------------------------------------ 震動 */
 @keyframes screenShake {
-  0%,
-  100% {
-    transform: translate(0, 0);
-  }
-  20% {
-    transform: translate(-6px, 3px);
-  }
-  40% {
-    transform: translate(5px, -4px);
-  }
-  60% {
-    transform: translate(-4px, -2px);
-  }
-  80% {
-    transform: translate(3px, 3px);
-  }
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  10% { transform: translate(-9px, 4px) rotate(-0.4deg); }
+  25% { transform: translate(8px, -5px) rotate(0.45deg); }
+  40% { transform: translate(-7px, -3px) rotate(-0.35deg); }
+  55% { transform: translate(6px, 5px) rotate(0.3deg); }
+  70% { transform: translate(-4px, 2px) rotate(-0.2deg); }
+  85% { transform: translate(3px, -2px) rotate(0.12deg); }
 }
 
 body.is-shaking {
-  animation: screenShake 0.4s ease;
+  animation: screenShake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97);
 }
 
-/* ------------------------------------------------------------ 響應式 */
-@media (max-width: 760px) {
+/* 對自己開槍前的「屏息等待」：畫面壓暗、輕微呼吸，再擊發
+   （用專屬半透明層，不覆蓋 body::after 的皮革噪點） */
+.fx-layer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 60% 55% at 50% 50%, transparent 28%, rgba(0, 0, 0, 0.78) 100%);
+  transition: opacity 0.2s ease;
+}
+
+body.is-awaiting .fx-layer::after {
+  animation: awaitBreath 0.62s ease-in-out;
+}
+
+@keyframes awaitBreath {
+  0% { opacity: 0; }
+  45% { opacity: 1; }
+  100% { opacity: 0.9; }
+}
+
+/* ------------------------------------------------------------------ 響應式 */
+/* ================= iPad（橫向 / 直向）================= */
+@media (max-width: 1024px) {
+  /* 用 dvh 配合安全區域，避開瀏海與手勢條 */
   .game {
-    padding: 8px 10px 10px;
+    height: 100dvh;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .arena {
+    gap: clamp(0.2rem, 1vh, 0.6rem);
+    padding: clamp(0.35rem, 1.2vh, 0.7rem) clamp(0.5rem, 1.6vw, 1rem);
+  }
+
+  /* 觸控熱區加大 */
+  .btn--big {
+    min-height: 56px;
+  }
+
+  .btn {
+    min-height: 44px;
+  }
+
+  .slot {
+    min-height: 52px;
+  }
+
+  .actions {
+    padding-bottom: calc(clamp(0.4rem, 1.4vh, 0.8rem) + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* ================= 手機（直向）================= */
+@media (max-width: 600px) {
+  .game {
+    height: 100dvh;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .lobby {
+    padding: 1.2rem 0.8rem 2rem;
+  }
+
+  .arena {
+    gap: 0.25rem;
+    padding: 0.3rem 0.4rem;
   }
 
   .row--me {
-    grid-template-columns: 1fr;
-    gap: 8px;
+    flex-direction: column;
+    gap: 0.3rem;
   }
 
+  /* 8 格道具欄：4×2 兩排大按鈕，拇指好按且不超出螢幕 */
   .items {
-    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: minmax(46px, 1fr);
+    gap: 5px;
+    padding: 0.35rem;
   }
 
-  .gun {
-    font-size: clamp(64px, 16vh, 96px);
+  .slot {
+    min-height: 46px;
+    padding: 0.25rem 0.1rem;
   }
 
-  .foe {
-    padding: 9px 6px;
+  .slot__icon {
+    font-size: 1.15rem;
   }
 
-  .foe__name {
-    font-size: 13px;
+  .slot__name {
+    font-size: 0.58rem;
+  }
+
+  /* 開槍按鈕：最小 48px 觸控熱區 */
+  .btn--big {
+    min-height: 48px;
+    font-size: 1rem;
   }
 
   .btn__main {
-    font-size: 16px;
+    font-size: 0.98rem;
+  }
+
+  .btn__sub {
+    font-size: 0.64rem;
   }
 
   .actions__row {
-    gap: 8px;
+    gap: 0.4rem;
+  }
+
+  .actions {
+    padding: 0.35rem 0.5rem calc(0.45rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .bar {
+    gap: 0.35rem;
+    padding: 0.35rem 0.5rem;
+  }
+
+  .bar__item {
+    font-size: 0.68rem;
+  }
+
+  .turn-timer {
+    width: 38px;
+    height: 38px;
+    border-width: 1.5px;
+  }
+
+  .turn-timer__ring {
+    font-size: 0.9rem;
+  }
+
+  .foe {
+    padding: 0.3rem 0.35rem;
+  }
+
+  .foe__name {
+    font-size: 0.78rem;
+  }
+
+  .heart {
+    font-size: 0.92rem;
+  }
+
+  .me {
+    padding: 0.45rem 0.6rem 0.5rem;
+  }
+
+  .me__name {
+    font-size: 0.9rem;
+  }
+
+  .gun {
+    width: min(100%, 88vw);
+  }
+
+  /* 說明卡固定在道具欄上方，不會被螢幕邊緣裁切，也不蓋住道具格 */
+  .item-card {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 210px);
+    width: 94vw;
+    padding: 0.6rem 0.7rem 0.55rem;
+  }
+
+  .item-card__use {
+    min-height: 48px;
+  }
+
+  /* 浮動 hover 提示在手機上不需要 */
+  .item-tooltip {
+    display: none !important;
+  }
+
+  /* 彈藥架在窄螢幕縮小 */
+  .rack__body {
+    padding: 0.5rem 0.55rem;
+  }
+
+  .rack__groove {
+    min-height: 74px;
+  }
+
+  .rack__receiver {
+    width: 66px;
+  }
+}
+
+@media (max-width: 720px) {
+  .lobby {
+    padding-top: 1.6rem;
+  }
+
+  .arena {
+    gap: 0.3rem;
+    padding: 0.4rem;
+  }
+
+  .row--me {
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .items {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* 手機螢幕矮：道具格縮小，確保按鈕仍看得到 */
+    grid-auto-rows: minmax(34px, 1fr);
+  }
+
+  .cylinder {
+    width: auto;
+    height: auto;
+  }
+
+  .foe__name {
+    font-size: 0.82rem;
+  }
+
+  .btn__main {
+    font-size: 1rem;
+  }
+
+  .actions__row {
+    gap: 0.5rem;
+  }
+
+  .bar {
+    gap: 0.4rem;
+    padding: 0.4rem 0.6rem;
+  }
+
+  .turn-timer {
+    width: 40px;
+    height: 40px;
   }
 }
 
 @media (max-width: 420px) {
+  .items {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .hearts {
-    font-size: 17px;
-  }
-
-  .bar {
-    font-size: 12px;
-  }
-
-  .turn-timer__ring {
-    width: 44px;
-    height: 44px;
-    font-size: 20px;
-    border-width: 2px;
+    gap: 2px;
   }
 }
 
+/* 尊重系統的減少動態偏好 */
 @media (prefers-reduced-motion: reduce) {
-  .gun,
-  .gun.is-aiming,
-  .gun.is-recoil,
-  .bubble,
-  .reveal__card,
-  .result__card,
-  .hearts.is-hit,
-  .turn-timer__ring,
-  .item-tooltip,
-  body.is-shaking {
-    animation: none !important;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
   }
 
-  .reveal__bar i {
-    transition: none !important;
+  body.is-shaking {
+    animation: none !important;
   }
 }

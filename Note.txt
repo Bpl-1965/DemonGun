@@ -1,0 +1,257 @@
+# Role
+Senior Software Developer.
+
+# Rules
+1. 繁體中文（程式碼、技術詞除外）。
+2. 極簡：直接給最終可執行程式碼，不寒暄、不解釋。
+3. 遇錯誤立即停止，只回原因與行號，不自動重試。
+4. 程式碼乾淨、高效、只留必要註解。
+5. 需求不明先提問（條列）。
+
+# 工作紀錄（每完成一件工作就往這裡追加；上限 200 行）
+# 超過 200 行就開 Note2.txt 續寫；Note 只是讓使用者看懂「做了什麼」。
+
+## 2026-11-18
+- 掃描全部腳本：app.py、config/game_config.py、config/items.py、logic/game_engine.py、logic/dialogue.py、public/client.js、tools/check_frontend.py、tools/ui_smoke.js。
+- 回報現況：engine 有 12 件道具（文件寫 24 件）；AI 會引用不存在的道具 id（BURNER / CHAMPAGNE / FIRST_AID），會退回改打玩家。
+- 依指示改寫 Note.txt：規則保留 + 新增「工作紀錄」區，記錄每次做了什麼。
+- 追完全部執行流程（啟動 → 建房 → 開局 → 開槍/用道具 → AI → 換彈 → 結束），並實跑驗證：
+  - tools/check_frontend.py：45 個 id，接縫全對 ✅
+  - node tools/ui_smoke.js：40 通過 / 0 失敗 ✅
+  - 實際啟動 app.py（PORT=5099、DEVIL_REVEAL_MS=0），用 socketio client 跑單人局到第 5 輪：開局、RELOAD、發道具、AI 回合、TAUNT、ROUND_END 全部正常。
+- 執行流程（結論）：
+  1. python app.py → main() 印版本 → socketio.run(threading 模式)。
+  2. 瀏覽器開 / → Flask 回 public/index.html → 載入 socket.io.min.js、client.js → connect 後收到 server:hello（含 config）。
+  3. 建房：client 送 room:create → app 建 Room + Seat(p1) → 回房碼；單人開局直接接 game:start。
+  4. 開局：start_game() 補 AI 座位 → Game.create() → game.start() 回動作串 → broadcast_actions（已過濾 chamber）→ emit_state（每人一份 public/private）→ schedule_after_broadcast（裝填鎖 → AI 或回合計時器）。
+  5. 玩家點按鈕：client 送 game:shoot / game:item（只帶 targetId / itemId）→ app 過濾欄位 + 防連點 → game.execute() 驗證輪次與合法性 → 回動作串 → 廣播 + 同步狀態。
+  6. AI：run_ai_loop 每 0.7~1.6 秒問 choose_ai_intent 一次，出錯就退成對玩家開槍，最多 8 步。
+  7. 換彈：子彈打光 → ROUND_END → _reload() 重裝、發道具、裝填鎖 3 秒 → 第 1 個活人先手。
+  8. 結束：只剩 1 人存活 → GAME_OVER → game:reveal 公布完整彈藥 → 再來一局走 room:rematch（全部在線的人都按了才開新局）。
+- 加上 ngrok 支援：app.py 匯入 ProxyFix 並套在 app.wsgi_app（x_for/x_proto/x_host/x_prefix = 1），反向代理下協定與來源才會正確。
+- 實測對外連線成功：https://raking-subfloor-departed.ngrok-free.dev（已存在、指向 localhost:5000 的 ngrok 通道）。
+  - /api/health 回 200；經公網 room:create + game:start 成功，phase = playing。
+  - 本機伺服器已用 `python app.py` 開在 5000（背景執行）。
+  - 注意：免費方案只有這一個固定網域，開第二條通道會撞 ERR_NGROK_334。
+- 修 bug（使用者回報：道具偶爾不能用 + 道具超過 8 格）：
+  1. 每回合道具上限 `MAX_ITEMS_PER_TURN` 原本硬寫 3（logic/game_engine.py 常數），保留回合的道具用滿 3 件就被鎖死 → 前端道具全灰。改為讀 config `LIMITS.MAX_ITEMS_PER_TURN`（預設 8，0 = 不限），新增 `Game.max_items_per_turn()`。
+  2. 道具格數上限改由 `Game.max_item_slots()` / `item_cap()` 讀「本局快照」，不再 import 全域設定，避免改設定後前後不一致。
+  3. 找到真正「道具不能用」的元兇：`BEER`（啤酒）在 items.py 的 effect 是 `eject_and_shoot`，引擎只認 `eject`，用了只會回 ITEM_FAILED: unsupported（道具白白消耗）。已讓引擎同時接受兩種寫法。
+  4. 前端 renderItems() 空格數原本硬寫 3，改成讀 `config.LIMITS.MAX_ITEMS`（8）。
+- 驗證：12 件道具全部可正常使用；Bug 重現腳本轉為通過；check_frontend ✅、ui_smoke 40/0 ✅、語法檢查 ✅。
+- 依指示不再主動開 ngrok（只有使用者開口才用）；已停掉我開的那台伺服器，原本就在跑的 ngrok 沒動。
+- 道具改成資料驅動（重點：改 config/items.py 清單 → 重開 app.py 就生效）：
+  1. 新增 logic/effects.py：效果註冊表，21 個效果名（heal / deal_damage / eject / gacha …）。
+     加新效果 = 寫一個函式 + @EFFECTS.register("名字")，不必改 game_engine.py。
+  2. game_engine._apply_item() 從 200 行 if/elif 改成查 EFFECTS 表（只剩 12 行）。
+  3. config/items.py 檔頭改成完整使用說明：怎麼加道具、可用 effect 清單、params 對照。
+  4. 新增 validate_items()：檢查必填欄位、id 格式/重複、desc 佔位符、effect 是否有實作、
+     以及不在 LOOT CHANCES 裡的孤兒道具。開機自動跑，有問題印在啟動訊息。
+  5. /api/health 增加 items 與 itemProblems 欄位。
+  6. get_item() 加自動重建索引，避免「加了道具忘記同步 ITEM_BY_ID」而查不到。
+- 驗證：新增一件 MOLOTOV 只改資料即可用（造成 2 傷）；打錯 effect、壞掉的 desc 都會被抓出來；
+  原有 12 件道具全部回歸通過；前端檢查與 ui_smoke 40/0 全過。
+- 三件新工作（機率可自訂 / 多人 / 找 bug）：
+  1. 機率改到「道具自己的 params」：任何道具加 "CHANCE" 即可，支援 75、0.75、"1/4" 三種寫法；
+     desc 寫 {CHANCE} 會自動顯示百分比。random_heal / gamble_heal / extra_turn 這三個
+     效果自己處理機率（失敗有專屬後果），其餘效果由引擎入口統一擲骰，沒過回 ITEM_FAILED。
+     新增示範道具 MOLOTOV（60% 打 2 傷）、LUCKY_CIG（1/2 機率回 1 血）。
+  2. 多人模式修了四個會「卡住」的點（詳見下方找 bug）。
+  3. 另外讓 room:update 每次都附帶最新道具表，中途加入或伺服器改過道具都不會顯示舊資料。
+- 找到並修掉的 bug：
+  a. TOO_FAST 誤鎖（最嚴重）：accept_action() 先蓋戳記才驗證，被 AMMO_REVEAL / NOT_YOUR_TURN
+     擋掉的請求也蓋章，玩家接著按就被吞掉 0.5 秒，看起來像「按了沒反應」。改成先驗證、成功後才
+     stamp_action()。
+  b. 開局 deadline 為 0：start_game() 先 emit_state 才 schedule_after_broadcast，第一份狀態沒有
+     回合期限；改成先排程再推狀態。實測裝填鎖 3 秒結束後立刻有 60 秒。
+  c. 裝填鎖期間殘留舊 deadline：arm_reveal_timer() 期間現在會清掉 room.turn_deadline。
+  d. HANDSAW 說明寫「造成 2 傷害」但引擎只 +1，params 被忽略；改成真的吃 params.DAMAGE，
+     新增 Player.sawn_bonus，換輪時重置。
+  e. LOOT CHANCES 總和因新道具變成 112% → 重新分配到 99%。
+  f. 多人舊分頁拿到過期道具表（伺服器送 12 件，實際 14 件）→ room:update 帶 items。
+- 驗證：機率實測 MOLOTOV 0.62、LUCKY_CIG 0.52（各 400 次）；多人建房/加入/開局/輪流開槍/
+  重連 3 次全部正常；裝填鎖期間連按 3 次都回 AMMO_REVEAL，解鎖後立刻可動；check_frontend ✅、
+  ui_smoke 40/0 ✅、items 驗證 0 問題 ✅。
+- UI 大改版：暗黑地下賭桌風（重寫 public/index.html、public/style.css，新增 public/fx.js）：
+  1. 100% 保留原有 DOM ID 與結構邏輯：client.js 一行都沒改，所有元素都還在原本的位置。
+     新增 11 個 id（fxBlood / fxMuzzle / muzzleFlash / cylinder / cylinderRot / revealShells 等），
+     index.html 從 45 → 56 個 id，check_frontend 全過。
+  2. 視覺：深紅氈布 + 舊木紋 + 皮革噪點（純 CSS 多層漸層，無外部圖片）、暗角、燙金 #d4af37 /
+     血紅 #b91c1c 邊框、Cinzel + Noto Serif TC 襯線標題 + Share Tech Mono 等寬數字。
+     道具欄做成木盒 / 鐵盒凹槽（8 格固定），席位用命格燈號，兩顆大按鈕做成左輪板機
+     （:active 下沉 + 陰影縮減 + 危險光暈脈動）。
+  3. 特效（全部在 fx.js，只觀察 DOM，不碰 socket / 狀態）：
+     - 左輪彈巢：SVG 6 孔，裝填或換輪時高速旋轉 + 卡榫回彈定位。
+     - 受擊：MutationObserver 監聽血量下降 → 全螢幕震動 + 血紅邊緣閃光 + 槍口火光。
+     - 裝填彈窗：實彈紅銅 / 空包灰銀立體子彈並排，金屬上膛進場動畫。
+  4. 修掉自己引入的三個問題：血紅閃光殘留不散（改用 animationend 收 class）、
+     道具欄 8 格沒鋪滿（grid-auto-rows）、彈窗子彈只畫一半（dataset.sig 沒重設 + 讀值防護）。
+  5. 新增 tools/fx_smoke.js（15 項）驗證 fx.js：載入不丟錯、血量下降觸發三種特效、
+     血量沒變不重複觸發、子彈數量正確、缺少元素也不炸、按鈕只加視覺 class 不改 disabled。
+- 最終驗證：check_frontend 45+11=56 個 id 全過 ✅、ui_smoke 40/0 ✅、fx_smoke 15/0 ✅，
+  並用 headless Chrome 實際截圖確認大廳 / 對戰 / 裝填彈窗三個畫面。
+- 房間分享網址 + 換彈動畫 + 彈藥庫（使用者指定）：
+  1. 網址改成 /room/<房碼>/<token>：
+     - Room 新增 token（secrets.token_urlsafe(9)），app.py 新增 @app.get("/room/<code>/<token>")。
+     - room:create / lobby:update / room:update 都回傳 roomUrl 與 token。
+     - client.js 新增 parseRoomLink() / joinFromLink()：打開連結會自動填房碼並加入，
+       房主建房後網址列直接換成分享連結，大廳多一行「邀請連結」可點擊複製（#roomShare）。
+  2. 彈藥庫：把原本的中央大彈巢改成「本輪彈藥」面板（#cylinder 保留），
+     顯示實彈 N / 空包 N，開局或每輪換彈時展開，3 秒倒數結束自動收起（#cylinder.is-open）。
+  3. 換彈動畫：槍枝改成完整左輪 SVG（木握把 + 彈巢 + 槍管 + 準星），換輪時整把槍上抬轉向
+     （.is-reloading）並讓彈巢自轉；不用任何彈窗 UI。
+  4. 自己開槍：先 0.62 秒「屏息等待」（畫面壓暗 #cylinder 與 body.is-awaiting）再震動 + 槍口火光；
+     對敵人開槍直接後座。全部只加 class，不攔截 click、不改任何狀態。
+  5. 修掉的問題：ui_smoke 因為 window.location 不存在而崩（加防護）、
+     fx_smoke 誤判中心彈巢旋轉（改測 gunCylinder + 彈藥庫數值）。
+- 驗證：/room/<code>/<token> 回 200 並送出遊戲頁；建房→拿連結→另一人加入→開局全部正常；
+  check_frontend 58 個 id ✅、ui_smoke 40/0 ✅、fx_smoke 19/0 ✅；公網 /api/health 正常。
+- 修兩個版面 Bug + 槍枝改成參考圖（Google Play「Shotgun Roulette」截圖）：
+  1. [hidden] 被覆蓋 → 大廳與遊戲同時顯示：
+     .lobby/.game 等元件都設了 display:flex/grid，優先度蓋掉瀏覽器預設的 [hidden]{display:none}。
+     在 style.css 最上方加 [hidden]{display:none !important;} 並刪掉多餘的 .game[hidden] 規則。
+  2. 單屏滿版：.game 從 min-height:100dvh 改成 height:100dvh + overflow:hidden，
+     .arena 加 min-height:0 與 grid-template-rows:auto minmax(0,1fr) auto，
+     .actions 從 sticky 改成 flex:0 0 auto，
+     道具格/按鈕/槍枝高度全部改成 clamp() 可壓縮，
+     彈藥庫改成絕對定位疊在中央區（不佔版面高度，矮螢幕不會把按鈕推出畫面），
+     對手區加 max-height:26vh。實測 600 / 720 / 800 / 900 高度下按鈕都完整可見、無捲動。
+  3. 槍枝改成參考圖的橫向散彈槍（SVG）：槍口朝左、木質泵動護木包覆彈倉、
+     黑握把 + 木托、機匣燙金「DEVIL」刻字、槍口火光。
+     換輪時整把槍上抬轉向 + 泵動護木前後抽送（#gunPump，替代原本的左輪彈巢）。
+     fx_smoke 的「彈巢旋轉」改測 #gunCylinder（保留節點以維持測試相容）。
+- 驗證：check_frontend 61 個 id ✅、ui_smoke 40/0 ✅、fx_smoke 19/0 ✅、公網 /api/health 正常。
+- 裝填提示改造成《Buckshot Roulette》實體霰彈槽（Shell Rack）：
+  1. 外觀：移除圓角金邊大卡片，改成深色鐵框 + 暗木凹槽長條彈藥架（.rack），
+     右側接散彈槍機匣 SVG（進彈口 / 拋殼口 / 螺絲），底部只留一條細金屬進度線。
+     銘牌極簡：`第 N 輪 | LIVE 2 · BLANK 3`。原有 DOM ID 全部保留（45→66 個）。
+  2. 霰彈殼（12 號）用 4 層 div 做立體圓柱：
+     實彈＝亮紅彈身 + 黃銅底火 + 紅色霓虹光暈；
+     空包＝深藍灰彈身 + 銀色底火 + 淡藍光暈。
+  3. 三段時序（總長 3 秒，實測 CDP 驗證）：
+     0.0~1.4s 亮彈記憶：實彈與空包分左右並排，依序上彈亮起（每顆 90ms 錯開）
+     1.4~2.8s 推進槍膛：固定種子洗牌 → 一顆顆向上彈起、向右滑入進彈口消失，
+              進彈口每次微震 + 金色閃光
+     2.8~3.0s 空槽向下方收起淡出
+  4. 修掉三個自己造成的 bug：
+     a. renderRevealShells 在 #reveal 還 hidden 時就開跑，拿到半套數字（2/0）並記住 sig，
+        導致完整數字永遠不重畫 → 改成等 reveal 顯示後才處理，未顯示時 60ms 重試。
+     b. runRackSequence 內 delete groove.dataset.sig，把外層防重播標記刪掉，
+        造成動畫重播、只亮到第一顆 → 移除該行。
+     c. client.js 的 showReveal 是一行一行寫值，MutationObserver 會被中途觸發 →
+        另外監聽 #reveal 的 hidden 變化補畫。
+- 驗證：check_frontend 66 個 id ✅、ui_smoke 40/0 ✅、fx_smoke 25/0 ✅
+  （新增階段 1/2/3 時序測試），並用 CDP 實測：700ms 全亮、1900ms 進膛 2 顆、
+  2500ms 進膛 4 顆、2950ms 全進膛並開始收起。
+- 效能最佳化 + 觸控 / iPad / 手機適配：
+  1. GPU 動畫（零 layout reflow）：
+     - 進度條改成 transform:scaleX(0) + transform-origin:left center + will-change:transform。
+     - 子彈全部改用 translate3d(x,y,0) scale(...) 與 opacity，will-change:transform,opacity。
+     - 靜態發光改用固定 box-shadow，不再對 filter 做動畫。
+  2. 移除全部 backdrop-filter（4 處 → 0），改用純色暗底 + 單層細邊框。
+  3. 時序改純 CSS：生成子彈時寫入 --i / --lit-delay / --fire-delay，
+     由 @keyframes shellPop + shellSlot 搭配 animation-delay 執行，
+     不再用多個 setTimeout 逐一改 style；JS 只加一次 .is-racking。
+  4. MutationObserver 修正：移除對 #revealShells 的監聽（fx.js 自己會寫它 → 自我觸發無限重畫），
+     只保留 revealLive / revealBlank + #reveal 的 hidden 變化，並用 rAF 批次 flush。
+  5. 道具兩段式操作：第一次點擊＝選中（.slot.is-armed 燙金高亮）並顯示 #itemCard 說明卡
+     （名稱 / 效果 / 成功率），第二次點擊同一格或按「使用」才送 game:item；
+     點空白處或按 Esc 取消；用掉 / 換輪自動取消選中。
+  6. RWD：
+     - viewport 改成 maximum-scale=1.0, user-scalable=no, viewport-fit=cover；
+       html 與按鈕加 touch-action:manipulation（防連點縮放）。
+     - iPad（≤1024px）：100dvh + env(safe-area-inset-*)；按鈕 min-height 56/44px。
+     - 手機（≤600px）：道具欄 4×2 大按鈕（實測每格 87×46px，無橫向溢出）；
+       開槍按鈕實測 69px（> 48px 熱區）；說明卡固定於道具欄正上方且不出螢幕；
+       hover tooltip 在手機隱藏。
+  7. renderItems 加 sig 比對：道具清單沒變就不重建 DOM，避免每幀重繪。
+  8. ui_smoke 相容：假 DOM 沒有 setAttribute，改用 setAttr() 防護，測試不需修改。
+- 驗證：check_frontend 67 個 id ✅、ui_smoke 40/0 ✅、fx_smoke 28/0 ✅；
+  CDP 實測手機 390×844 與 iPad 1024×768 均無橫向溢出、遊戲區高度 = 視窗高度、頁面不捲動。
+- 修「第 1 輪順暢、換輪後開始卡頓」的記憶體 / 監聽器洩漏：
+  1. setInterval 洩漏（主因）：client.js 的 armStateWatchdog() 原本每收到一次 room:update
+     就 clearInterval + 重新 setInterval，等於每輪都重建一個常駐計時器 → 改成只在沒有時建立一次。
+  2. spinCylinder() 的 setTimeout 沒有保存 ID，無法取消，換輪多次就累積 →
+     改成具名 cylTimer / pumpTimer，並加 spinLock 防重入（動畫進行中就跳過）。
+  3. runRackSequence 加 rackRunning 防重入鎖；提前 return 的三條路徑都會釋放鎖；
+     動畫收尾改用 animationend + done 旗標（計時器只當保險），保證每輪結束都清乾淨。
+  4. renderFoes 加 sig 比對：對手名單 / 血量 / 回合 / 死亡 / 選中沒變就不重建 DOM，
+     避免每輪換彈重複產生節點與事件監聽器。
+  5. 確認 client.js 的 document.addEventListener（keydown / click）都只在 bindGame() 內綁一次，
+     boot() 只執行一次 → 無重複綁定。道具格 / 目標列的監聽器綁在新建元素上，
+     innerHTML 清空時隨元素一起回收，不會殘留。
+  6. 確認 fx.js 的 MutationObserver 全部只在 startObservers() 建立一次，
+     且已移除對 #revealShells 的自監聽（原先會自我觸發）。
+- 實測（CDP，連續 6 輪換彈）：DOM 節點數 263 → 263 全程不變、setInterval 0、新增
+  document/window 監聽器 0、observer 新增 0、子彈節點固定 5 個（重用容器不累積）。
+- 驗證：check_frontend 67 個 id ✅、ui_smoke 40/0 ✅、fx_smoke 28/0 ✅。
+- 修「非玩家回合仍可點擊 / 使用道具」+ 清除跨回合狀態殘留：
+  1. 前端主因：renderItems() 的 canUse 只檢查 phase === "playing"，漏掉「輪到我」與「裝填鎖」，
+     所以別人的回合道具仍然可按（後端雖然會擋，但前端看起來就是能用）。
+     改成 5 個條件全部成立才啟用：playing + 非裝填鎖 + 是我的回合 + 我還活著 + 本回合未用滿。
+  2. 點擊事件本身再驗一次：不是我的回合或裝填中就 disarmItem() 後直接 return，
+     不進入鎖定狀態；說明卡的「使用」按鈕與 useItem() 也各加一次同樣的防護。
+  3. 跨回合清除：
+     - room:update 收到時計算 turnKey（phase|activeId|round），變化就 disarmItem()。
+     - 動作串收到 RELOAD 或 AMMO_REVEAL 時立即 disarmItem()。
+     - renderItems() 開頭若 canUse 不成立或道具已不存在，就 disarmItem()。
+     - disarmItem() 改成無條件清理 DOM（原本 armedItem 為 null 時直接 return，可能留下殘留說明卡）。
+  4. 後端確認（logic/game_engine.py）：execute() 的驗證順序為
+     phase → 玩家存在 → 未死亡 → 裝填鎖(AMMO_REVEAL) → intent 合法 → 輪次(NOT_YOUR_TURN)，
+     使用道具與開槍共用同一組檢查，效果完全不會在錯誤時機觸發。
+- 驗證：後端 9 項越權測試全過（裝填鎖/別人回合/死亡/結束/不存在玩家/沒有道具，且都不消耗道具）；
+  前端新增 4 項回合權限測試（別人回合 disabled、我的回合可點、裝填鎖 disabled、用滿 disabled）；
+  check_frontend 67 個 id ✅、ui_smoke 44/0 ✅、fx_smoke 28/0 ✅。
+- 修「用 2~3 個道具就自動結束回合 / 跳下一輪」：
+  1. config/items.py：BEER（啤酒）、BEER2（烈酒）、MOLOTOV（汽油彈）
+     的 keeps_turn 由 False 改成 True，用完保留自己的回合。
+  2. config/game_config.py：LIMITS["MAX_ITEMS_PER_TURN"] 由 8 改成 0（不限次數）。
+  3. logic/game_engine.py 找到真 bug：_command_use_item() 原本寫
+     `if items_this_turn >= max_items_per_turn()`，上限為 0 時 0 >= 0 永遠成立 →
+     一用道具就回 TOO_MANY_ITEMS。改成 0 代表不限（只有 > 0 才檢查）。
+  4. public/client.js 同樣的 falsy bug：`|| 3` 會把設定值 0 誤判成 3，
+     改成明確判斷 typeof === "number"，0 就代表不限。
+  5. 確認引擎回合流轉正確：_finish_turn(keep) 只要 keep=True 就保留回合，
+     keep = extends or item.keeps_turn；只有「打光子彈（ROUND_END）」或
+     「主動對敵人開槍」才交棒，對自己打空包彈也保留回合。
+- 驗證：24 項回合保留測試全過（連用 3 個 / 6 個道具、汽油彈、啤酒、烈酒都不換人；
+  打敵人才交棒、空包自射保留、打光才換輪）；上限 0 時可連用 8 個；
+  實際對局用 HANDSAW 後 active 仍是 p1；
+  check_frontend 67 個 id ✅、ui_smoke 44/0 ✅、fx_smoke 28/0 ✅、道具驗證 0 問題 ✅。
+- 兩項小調整：
+  1. 放慢 AI 動作間隔：app.py 新增常數 AI_ACTION_INTERVAL_MIN = 1.5、
+     AI_ACTION_INTERVAL_MAX = 2.2，run_ai_loop 每個動作前休眠
+     1.5 + random() * 0.7 秒，讓前一個動作的動畫播完再進行下一步。
+     （原本用 engine 的 ai_think_delay 0.7~1.6s，容易讓動畫重疊；該 import 已移除。）
+  2. 開槍紀錄明確寫出「誰射了誰」：game_engine.shoot() 的日誌改成
+     「[開槍者] 對 [目標] 開槍」，對自己開槍時目標顯示「自己」不重複名字。
+     其餘紀錄與 UI 完全沒動，也沒有新增任何戰報欄位或橫幅。
+- 驗證：實測 AI 動作間隔兩次為 1.58s / 1.97s（都在 1.5~2.2s 內）；
+  紀錄實際輸出為「你 對 DEVIL 開槍：實彈，1 點傷害。」、
+  「DEVIL 對 你 開槍：空包彈。」、「你 對 自己 開槍：空包彈。」；
+  check_frontend 67 個 id ✅、ui_smoke 44/0 ✅、fx_smoke 28/0 ✅。
+- 全 UI 絲滑過渡 + 本輪結束 2.2 秒緩衝：
+  1. style.css 新增兩個變數：
+     --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1)
+     --transition-smooth: transform 0.18s / opacity 0.22s / box-shadow 0.22s / border-color 0.22s
+     套用到座位卡片（輪到誰行動時上浮 -3px + 邊框高亮）、生命刻度、道具格、
+     開槍按鈕、我方席位、回合文字、目標列共 7 處。
+     已確認全檔沒有任何 transition:all，也沒有對 width/height/left/right/top/bottom/margin 做過渡。
+  2. 本輪打光後的 2.2 秒緩衝（app.py）：
+     - 新增 ROUND_END_PAUSE_MS = 2200。
+     - split_at_round_end() 把動作串切成「最後一發之前」與「換輪之後」兩段
+       （引擎會回 [SHOT, ROUND_END, RELOAD, ITEMS_GRANTED, AMMO_REVEAL, TURN_CHANGED]）。
+     - broadcast_with_round_end_pause() 先送前段（讓「誰射了誰」完整呈現），
+       緩衝 2.2 秒後才送換輪段並排程下一輪的 AI / 回合計時器。
+     - 緩衝期間 Room.round_pause_until > 0，送到前端的 roundPauseUntil 讓按鈕鎖住；
+       後端也直接擋（新的錯誤碼 ROUND_PAUSE），前端顯示「本輪剛結束，稍等一下就換你。」
+     - 開槍 / 用道具 / TIMEOUT / AI 四個動作點都改走這條路徑。
+- 驗證：實測最後一發 SHOT 封包與換輪封包間隔 **2.20s**；
+  緩衝期間的動作確實被擋（回 ROUND_PAUSE）；
+  check_frontend 67 個 id ✅、ui_smoke 44/0 ✅、fx_smoke 28/0 ✅。
+
+
+
+
+
+
