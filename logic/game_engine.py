@@ -521,8 +521,10 @@ class Game:
         order = self.players
         start = order.index(current) if current in order else -1
 
-        # 最多繞兩圈，避免全部人都被手銬銬住時無限迴圈
-        for _ in range(len(order) * 2):
+        # 每次略過都會消耗一個 skips；掃完所有存活者的略過次數後，
+        # 再多走一圈即可找到下一位可行動玩家。
+        max_steps = len(order) + sum(max(0, player.skips) for player in alive)
+        for _ in range(max_steps):
             start = (start + 1) % len(order)
             candidate = order[start]
             if candidate.dead:
@@ -532,7 +534,7 @@ class Game:
                 self._log("skip", f"{candidate.name} 被手銬銬住，跳過這一回合。")
                 continue
             return candidate
-        return alive[0]
+        raise RuntimeError("Unable to find an eligible player despite living players")
 
     def _round_starter(self) -> Player | None:
         """一輪結束、重新裝彈後的第一個行動者：從第 1 個座位往後找第一個活人。"""
@@ -801,13 +803,26 @@ class Game:
     def _apply_item(
         self, player: Player, item: dict[str, Any], target: Player | None
     ) -> tuple[list[dict[str, Any]], bool]:
-        """回傳 (動作串, 是否保留回合)。"""
+        """回傳 (動作串, 是否保留回合)。資料驅動的通用處理器。"""
         actions: list[dict[str, Any]] = []
         effect = item.get("effect")
         params = item.get("params") or {}
         extends = False
 
-        if effect == "heal":
+        # ==========================================
+        # 👇 通用數值修改類 (只要在 items.py 改數字就能生效)
+        # ==========================================
+        
+        if effect == "deal_damage":
+            dmg = int(params.get("DAMAGE", 1))
+            victim = target or self._default_opponent(player)
+            if victim and not victim.dead:
+                victim.hp = max(0, victim.hp - dmg)
+                if victim.hp <= 0: victim.dead = True
+                actions.append({"type": "DAMAGE", "playerId": victim.id, "amount": dmg, "hp": victim.hp, "dead": victim.dead})
+                self._log("damage", f"{player.name} 對 {victim.name} 造成了 {dmg} 點傷害。")
+
+        elif effect == "heal":
             if "HP" in params:
                 amount = int(params["HP"])
             else:
@@ -817,163 +832,33 @@ class Game:
                 actions.append(healed)
                 self._log("heal", f"{player.name} 回復 {healed['amount']} 點生命。")
 
-        elif effect == "random_heal":
-            chance = float(params.get("CHANCE", 50)) / 100.0
-            if self.rng.random() < chance:
-                amount = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
-                healed = self._heal(player, amount)
-                if healed:
-                    actions.append(healed)
-            else:
-                actions.append({"type": "ITEM_FAILED", "playerId": player.id, "itemId": item["id"], "reason": "no_effect"})
-
-        elif effect == "steal_turn":
-            # 你現在就是行動方：效果 = 這一回合不算結束
-            extends = True
-            actions.append({"type": "STEAL_TURN", "playerId": player.id, "targetId": (target or self._default_opponent(player) or player).id})
-
-        elif effect == "cut_barrel":
-            player.sawn_off += 1
-            actions.append(
-                {
-                    "type": "MODIFIER",
-                    "playerId": player.id,
-                    "kind": "sawn",
-                    "power": BASE_DAMAGE + player.sawn_off,
-                }
-            )
-            self._log("modifier", f"{player.name} 鋸短了槍管，下一發更痛。")
-
-        elif effect == "peek":
-            peek = self._peek(player, 1)
-            if peek:
-                actions.append(peek)
-
-        elif effect == "peek_many":
-            peek = self._peek(player, int(params.get("COUNT", 2)))
-            if peek:
-                actions.append(peek)
-
-        elif effect == "memory":
-            peek = self._peek(player, int(params.get("COUNT", 2)))
-            if peek:
-                actions.append(peek)
-
-        elif effect == "memory_all":
-            peek = self._peek(player, len(self.chamber))
-            if peek:
-                actions.append(peek)
-
-        elif effect == "eject":
-            if self.chamber:
-                shell = self.chamber.pop(0)
-                self._sync_counts()
-                for p in self.players:
-                    if p.intel:
-                        p.intel.pop(0)
-                actions.append({"type": "EJECT", "playerId": player.id, "shell": shell, "remaining": self.remaining()})
-                self._log("eject", f"{player.name} 退出一發子彈。")
-
-        elif effect == "eject_random":
-            count = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
-            ejected: list[str] = []
-            for _ in range(count):
-                if not self.chamber:
-                    break
-                ejected.append(self.chamber.pop(0))
-            if ejected:
-                self._sync_counts()
-                for p in self.players:
-                    p.intel = p.intel[len(ejected):]
-                actions.append(
-                    {"type": "EJECT", "playerId": player.id, "shell": ejected[0], "shells": ejected, "remaining": self.remaining()}
-                )
-
-        elif effect == "eject_and_shoot":
-            if self.chamber:
-                shell = self.chamber.pop(0)
-                self._sync_counts()
-                actions.append({"type": "EJECT", "playerId": player.id, "shell": shell, "remaining": self.remaining()})
-            opponent = target or self._default_opponent(player)
-            if opponent is not None:
-                shot = self.shoot(player.id, opponent.id)
-                if shot:
-                    actions.append(shot)
-                    taunt = self._taunt_for_shot(shot)
-                    if taunt:
-                        actions.append(taunt)
-            extends = False
-
-        elif effect == "rapid_fire":
-            shots = int(params.get("SHOTS", 2))
-            opponent = target or self._default_opponent(player)
-            actions.append({"type": "BARRAGE", "playerId": player.id, "shots": shots})
-            for _ in range(shots):
-                if opponent is None or opponent.dead or not self.chamber or self._check_winner():
-                    break
-                shot = self.shoot(player.id, opponent.id)
-                if shot:
-                    actions.append(shot)
-                    taunt = self._taunt_for_shot(shot)
-                    if taunt:
-                        actions.append(taunt)
-            extends = False
-
         elif effect == "max_hp_up":
             cost = int(params.get("HP", 1))
             gain = int(params.get("MAX_HP", 1))
             player.hp = max(1, player.hp - cost)
             player.max_hp = min(int(self.config["HP"]["MAX_HP"]), player.max_hp + gain)
-            actions.append(
-                {"type": "MODIFIER", "playerId": player.id, "kind": "max_hp", "hp": player.hp, "maxHp": player.max_hp}
-            )
+            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "max_hp", "hp": player.hp, "maxHp": player.max_hp})
 
         elif effect == "skip_next":
             victim = target or self._default_opponent(player)
-            if victim is None:
-                actions.append({"type": "ITEM_FAILED", "playerId": player.id, "itemId": item["id"], "reason": "no_target"})
-            else:
+            if victim:
                 victim.skips += int(params.get("SKIPS", 1))
                 actions.append({"type": "MODIFIER", "playerId": player.id, "targetId": victim.id, "kind": "cuffed", "skips": victim.skips})
+
+        elif effect == "cut_barrel":
+            player.sawn_off += 1
+            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "sawn", "power": 1 + player.sawn_off})
+            self._log("modifier", f"{player.name} 鋸短了槍管，下一發更痛。")
 
         elif effect == "nail_gun":
             player.nails = int(params.get("SHOTS", 3))
             player.nail_damage = int(params.get("DAMAGE", 2))
-            actions.append(
-                {"type": "MODIFIER", "playerId": player.id, "kind": "nails", "shots": player.nails, "damage": player.nail_damage}
-            )
+            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "nails", "shots": player.nails, "damage": player.nail_damage})
 
-        elif effect == "invert":
-            self.pending_inverted = True
-            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "inverted", "next": self.chamber[0] if self.chamber else None})
+        elif effect == "steal_turn":
+            extends = True
+            actions.append({"type": "STEAL_TURN", "playerId": player.id, "targetId": (target or self._default_opponent(player) or player).id})
 
-        elif effect == "gacha":
-            granted = self._grant_items(player, int(params.get("SHOTS", 3)))
-            actions.append(
-                {
-                    "type": "ITEMS_GRANTED",
-                    "playerId": player.id,
-                    "count": len(granted),
-                    "items": [items_module.get_item(i)["name"] for i in granted if items_module.get_item(i)],
-                    "reason": "gacha",
-                }
-            )
-
-        elif effect == "gamble_heal":
-            chance = float(params.get("CHANCE", 50)) / 100.0
-            if self.rng.random() < chance:
-                amount = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
-                healed = self._heal(player, amount)
-                if healed:
-                    actions.append(healed)
-            else:
-                damage = int(params.get("HP", 1))
-                player.hp = max(0, player.hp - damage)
-                if player.hp <= 0:
-                    player.dead = True
-                actions.append(
-                    {"type": "DAMAGE", "playerId": player.id, "amount": damage, "hp": player.hp, "dead": player.dead}
-                )
         elif effect == "extra_turn":
             chance = float(params.get("CHANCE", 100)) / 100.0
             if self.rng.random() < chance:
@@ -982,32 +867,82 @@ class Game:
             else:
                 actions.append({"type": "EXTRA_TURN", "playerId": player.id, "granted": False})
 
-        # 👇 把這段插在 else 的上面
+        # ==========================================
+        # 👇 特殊邏輯類 (因為太複雜，保留專屬處理)
+        # ==========================================
+
+        elif effect == "random_heal":
+            if self.rng.random() < float(params.get("CHANCE", 50)) / 100.0:
+                amount = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
+                healed = self._heal(player, amount)
+                if healed: actions.append(healed)
+            else:
+                actions.append({"type": "ITEM_FAILED", "playerId": player.id, "itemId": item["id"], "reason": "no_effect"})
+
+        elif effect in {"peek", "peek_many", "memory", "memory_all"}:
+            count = int(params.get("COUNT", 1)) if effect != "peek" else 1
+            peek = self._peek(player, count)
+            if peek: actions.append(peek)
+
         elif effect == "peek_and_hurt":
             count = int(params.get("COUNT", 3))
-            damage = int(params.get("DAMAGE", 2))
-            
-            # 1. 先偷看
+            dmg = int(params.get("DAMAGE", 1))
             peek = self._peek(player, count)
-            if peek:
-                actions.append(peek)
-                
-            # 2. 扣血
-            player.hp = max(0, player.hp - damage)
-            actions.append({
-                "type": "DAMAGE", 
-                "playerId": player.id, 
-                "amount": damage, 
-                "hp": player.hp, 
-                "dead": player.hp <= 0
-            })
-            
-            # 3. 判定死亡
-            if player.hp <= 0:
-                player.dead = True
-                self._log("death", f"{player.name} 被自己的好奇心害死了。")
-                
-            self._log("item", f"{player.name} 使用萬能工具，受到 {damage} 點傷害。")
+            if peek: actions.append(peek)
+            player.hp = max(0, player.hp - dmg)
+            if player.hp <= 0: player.dead = True
+            actions.append({"type": "DAMAGE", "playerId": player.id, "amount": dmg, "hp": player.hp, "dead": player.dead})
+
+        elif effect == "eject":
+            if self.chamber:
+                shell = self.chamber.pop(0)
+                self._sync_counts()
+                for p in self.players:
+                    if p.intel: p.intel.pop(0)
+                actions.append({"type": "EJECT", "playerId": player.id, "shell": shell, "remaining": self.remaining()})
+
+        elif effect == "eject_random":
+            count = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
+            ejected = []
+            for _ in range(count):
+                if not self.chamber: break
+                ejected.append(self.chamber.pop(0))
+            if ejected:
+                self._sync_counts()
+                for p in self.players: p.intel = p.intel[len(ejected):]
+                actions.append({"type": "EJECT", "playerId": player.id, "shell": ejected[0], "shells": ejected, "remaining": self.remaining()})
+
+        elif effect == "invert":
+            self.pending_inverted = True
+            actions.append({"type": "MODIFIER", "playerId": player.id, "kind": "inverted", "next": self.chamber[0] if self.chamber else None})
+
+        elif effect == "gacha":
+            granted = self._grant_items(player, int(params.get("SHOTS", 3)))
+            actions.append({"type": "ITEMS_GRANTED", "playerId": player.id, "count": len(granted), "items": [items_module.get_item(i)["name"] for i in granted if items_module.get_item(i)], "reason": "gacha"})
+
+        elif effect == "gamble_heal":
+            if self.rng.random() < float(params.get("CHANCE", 50)) / 100.0:
+                amount = self.rng.randint(int(params.get("MIN", 1)), int(params.get("MAX", 1)))
+                healed = self._heal(player, amount)
+                if healed: actions.append(healed)
+            else:
+                dmg = int(params.get("HP", 1))
+                player.hp = max(0, player.hp - dmg)
+                if player.hp <= 0: player.dead = True
+                actions.append({"type": "DAMAGE", "playerId": player.id, "amount": dmg, "hp": player.hp, "dead": player.dead})
+
+        elif effect == "rapid_fire":
+            shots = int(params.get("SHOTS", 2))
+            opponent = target or self._default_opponent(player)
+            actions.append({"type": "BARRAGE", "playerId": player.id, "shots": shots})
+            for _ in range(shots):
+                if opponent is None or opponent.dead or not self.chamber or self._check_winner(): break
+                shot = self.shoot(player.id, opponent.id)
+                if shot:
+                    actions.append(shot)
+                    taunt = self._taunt_for_shot(shot)
+                    if taunt: actions.append(taunt)
+            extends = False
 
         else:
             actions.append({"type": "ITEM_FAILED", "playerId": player.id, "itemId": item["id"], "reason": "unsupported"})

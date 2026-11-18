@@ -454,7 +454,7 @@
   function renderItems() {
     const grid = $("itemsGrid");
     const items = (priv() && priv().items) || [];
-    const canUse = isMyTurn() && !revealActive() && !state.busy && pub() && pub().phase === "playing";
+    const canUse = pub() && pub().phase === "playing";
     const me = myPlayer();
     const hpFull = Boolean(me && !me.dead && me.hp >= me.maxHp);
     grid.innerHTML = "";
@@ -788,6 +788,8 @@
 
     socket.on("room:update", (payload) => {
       if (!payload) return;
+      state.busy = false;
+      state.busyAt = 0;
       state.code = payload.code || state.code;
       state.hostId = payload.hostId || state.hostId;
       // 伺服器直接告訴我們「你是哪個 id」，不必再靠建房時的 ack 猜
@@ -831,6 +833,8 @@
 
     socket.on("game:action", (payload) => {
       if (!payload) return;
+      state.busy = false;
+      state.busyAt = 0;
       runActions(payload.actions);
     });
 

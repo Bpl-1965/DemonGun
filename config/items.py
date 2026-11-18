@@ -17,9 +17,9 @@
     True  = 用完這件道具，回合仍然在自己身上（可以接著開槍或再用道具）。
     False = 用完就交棒給下一位（連發類、搶回合類）。
 
-  想新增道具：加一筆 dict 進 ITEMS、在 LOOT 的 WEIGHTS 給個權重，
+  想新增道具：加一筆 dict 進 ITEMS、在 LOOT 的 CHANCES 給個百分比，
   再到 game_engine._apply_item() 補一個 effect 分支即可（前端不用動）。
-  刪除道具時記得同時把 LOOT 的 WEIGHTS 那一行拿掉 ——
+  刪除道具時記得同時把 LOOT 的 CHANCES 那一行拿掉 ——
   跑 validate_loot() 就會告訴你有沒有漏。
  ========================================================================== """
 
@@ -59,7 +59,7 @@ ITEMS: list[dict[str, Any]] = [
         "id": "MANGLER", "name": "萬能工具", "icon": "🔧",
         "desc": "公開接下來 {COUNT} 發子彈，但會受到 {DAMAGE} 點傷害。",
         "effect": "peek_and_hurt",
-        "params": {"COUNT": 3, "DAMAGE": 1},
+        "params": {"COUNT": 2, "DAMAGE": 1},
         "keeps_turn": True,
     },
     {
@@ -84,7 +84,7 @@ ITEMS: list[dict[str, Any]] = [
     },
     {
         "id": "INVERTER", "name": "逆轉器", "icon": "🔄",
-        "desc": "反轉現在這發子彈（實↔空）；換輪時失效。",
+        "desc": "反轉現在子彈",
         "effect": "invert", "params": {}, "keeps_turn": True,
     },
     {
@@ -102,16 +102,16 @@ ITEMS: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 #  掉落表
 # ---------------------------------------------------------------------------
-#  mode: "weights" 依 WEIGHTS 權重抽；"uniform" 每件等機率；"none" 不發
-#  ⚠ 這裡的每一把鑰匙都必須是 ITEMS 裡真的存在的 id，否則是死權重。
+#  mode: "percent" 依 CHANCES 百分比抽；"uniform" 每件等機率；"none" 不發
+#  ⚠ 這裡的每一把鑰匙都必須是 ITEMS 裡真的存在的 id。
 LOOT: dict[str, Any] = {
     "DEFAULT": {
-        "mode": "weights",
-        "WEIGHTS": {
-            "CIGARETTE": 10, "CIGARETTES": 7, "PILLS": 5,
-            "HANDSAW": 8, "MANGLER": 7, "BEER": 9, "BEER2": 5,
-            "HANDCUFFS": 6, "NAILGROUP": 3, "INVERTER": 7,
-            "BUNCH": 4, "VISION": 3,
+        "mode": "percent",
+        "CHANCES": {
+            "CIGARETTE": 12, "CIGARETTES": 10, "PILLS": 8,
+            "HANDSAW": 8, "MANGLER": 7, "BEER": 10, "BEER2": 6,
+            "HANDCUFFS": 8, "NAILGROUP": 5, "INVERTER": 8,
+            "BUNCH": 10, "VISION": 8,
         },
         "EXCLUDE": [],
     },
@@ -182,8 +182,25 @@ def roll_loot(rng, side: str = "PLAYER", exclude: list[str] | None = None) -> st
     if mode == "uniform":
         return rng.choice(candidates)
 
-    weights = table.get("WEIGHTS") or {}
-    pool = [(cid, float(weights.get(cid, 0))) for cid in candidates]
+    if mode == "percent":
+        chances = table.get("CHANCES") or {}
+        configured_total = sum(float(chance) for chance in chances.values())
+        remaining = max(0.0, 100.0 - configured_total)
+        unassigned = [cid for cid in candidates if cid not in chances]
+        if not unassigned:
+            unassigned = candidates
+        fallback_chance = remaining / len(unassigned) if unassigned else 0.0
+        pool = [
+            (
+                cid,
+                float(chances.get(cid, 0))
+                + (fallback_chance if cid in unassigned else 0.0),
+            )
+            for cid in candidates
+        ]
+    else:
+        weights = table.get("WEIGHTS") or {}
+        pool = [(cid, float(weights.get(cid, 0))) for cid in candidates]
     pool = [(cid, w) for cid, w in pool if w > 0]
     if not pool:
         return rng.choice(candidates)
@@ -201,8 +218,8 @@ def roll_loot(rng, side: str = "PLAYER", exclude: list[str] | None = None) -> st
 def validate_loot() -> list[str]:
     """檢查掉落表與道具表是不是對得上（回傳問題清單，空 list = 沒問題）。
 
-    自保機制：WEIGHTS 寫了不存在的 id、或 WEIGHTS 漏了某件道具
-    （不是 EXCLUDE 的），都會被列出來，避免「抽不到」或「抽到不存在的道具」。
+    自保機制：未知 id、超過 100% 的 CHANCES，以及 WEIGHTS 漏列道具
+    都會被列出來，避免「抽不到」或「抽到不存在的道具」。
     """
     problems: list[str] = []
     known = set(ITEM_BY_ID)
@@ -210,14 +227,18 @@ def validate_loot() -> list[str]:
         table = LOOT.get(side)
         if not table:
             continue
-        if table.get("mode") != "weights":
+        mode = table.get("mode", "weights")
+        if mode not in ("weights", "percent"):
             continue
-        weights = table.get("WEIGHTS") or {}
+        weights_key = "CHANCES" if mode == "percent" else "WEIGHTS"
+        weights = table.get(weights_key) or {}
         excluded = set(table.get("EXCLUDE") or [])
         for item_id in weights:
             if item_id not in known:
-                problems.append(f"LOOT[{side}] 的 WEIGHTS 有不存在於 ITEMS 的道具：{item_id}")
+                problems.append(f"LOOT[{side}] 的 {weights_key} 有不存在於 ITEMS 的道具：{item_id}")
         for item_id in known - excluded:
-            if item_id not in weights:
-                problems.append(f"LOOT[{side}] 的 WEIGHTS 漏了道具：{item_id}")
+            if mode == "weights" and item_id not in weights:
+                problems.append(f"LOOT[{side}] 的 {weights_key} 漏了道具：{item_id}")
+        if mode == "percent" and sum(float(chance) for chance in weights.values()) > 100:
+            problems.append(f"LOOT[{side}] 的 CHANCES 總和超過 100%")
     return problems
