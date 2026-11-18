@@ -257,9 +257,7 @@ class Game:
         total = int(_clamp(total, min_shells, int(ammo["MAX_SHELLS"])))
 
         # 2. 實彈期望值
-        #weight = _live_weight_from(self.config, rnd)
-        # 完全隨機產生 20% ~ 60% 的實彈機率
-        weight = self.rng.uniform(0.2, 0.6)
+        weight = _live_weight_from(self.config, rnd)
         low, high = min_live, max(min_live, total - min_blank)
 
         # 3. 無偏差取整
