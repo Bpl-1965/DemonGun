@@ -211,7 +211,7 @@
     // 只有「對手名單 / 血量 / 回合 / 死亡 / 選中」真的變了才重建 DOM。
     // 每輪換彈時只要血量沒變就不重建，避免重複產生節點與事件監聽器。
     const sig = JSON.stringify([
-      list.map((f) => [f.id, f.name, f.hp, f.maxHp, f.dead, f.itemCount]),
+      list.map((f) => [f.id, f.name, f.hp, f.maxHp, f.dead, f.itemCount, f.skips || 0]),
       p ? p.activeId : null,
       state.selectedTarget,
     ]);
@@ -235,6 +235,15 @@
       if (foe.dead) card.classList.add("is-dead");
       if (p && p.activeId === foe.id) card.classList.add("is-active");
       if (foe.id === state.selectedTarget) card.classList.add("is-selected");
+      if (Number(foe.skips) > 0) card.classList.add("is-cuffed");
+
+      // ⛓️ 被上銬的紅色警示徽章
+      if (Number(foe.skips) > 0) {
+        const cuff = document.createElement("span");
+        cuff.className = "cuffed-badge";
+        cuff.textContent = "⛓️ 已上銬" + (Number(foe.skips) > 1 ? " ×" + foe.skips : "");
+        card.appendChild(cuff);
+      }
 
       const name = document.createElement("span");
       name.className = "foe__name";
@@ -307,6 +316,19 @@
     const node = $("me");
     node.classList.toggle("is-turn", Boolean(p && p.activeId === state.youId));
     node.classList.toggle("is-dead", Boolean(me && me.dead));
+    // ⛓️ 自己被上銬時也顯示鎖鏈邊框
+    const meCuffed = Number(me && me.skips) > 0;
+    node.classList.toggle("is-cuffed", meCuffed);
+    if (typeof node.querySelector === "function") {
+      const oldBadge = node.querySelector(".cuffed-badge");
+      if (oldBadge && typeof oldBadge.remove === "function") oldBadge.remove();
+    }
+    if (meCuffed && typeof node.appendChild === "function") {
+      const cuff = document.createElement("span");
+      cuff.className = "cuffed-badge";
+      cuff.textContent = "⛓️ 已上銬" + (Number(me.skips) > 1 ? " ×" + me.skips : "");
+      node.appendChild(cuff);
+    }
 
     // 狀態標籤（由私有狀態的 mods 推得）
     const mods = (priv() && priv().mods) || {};
@@ -768,6 +790,50 @@
     if (damage > 0) $("hint").textContent = "-" + damage + " HP";
   }
 
+  /** 🍺 啤酒退彈：全房可見的退殼展示（1.8 秒後淡出） */
+  function showEject(action) {
+    const node = $("ejectToast");
+    if (!node) return;
+    const shells = action.shells && action.shells.length ? action.shells : [action.shell];
+    const kind = shells[0] === "LIVE" ? "live" : "blank";
+    const label = kind === "live" ? "實彈" : "空包彈";
+    const count = shells.length > 1 ? "共 " + shells.length + " 發" : "";
+    node.innerHTML =
+      '<span class="eject-toast__shell eject-toast__shell--' + kind + '">' +
+      '<i class="eject-toast__cap"></i><i class="eject-toast__body"></i><i class="eject-toast__rim"></i>' +
+      "</span>" +
+      '<span class="eject-toast__text">🍺 退出了 1 發【' + label + "】" + count + "</span>";
+    node.hidden = false;
+    node.classList.remove("is-showing");
+    void node.offsetWidth;
+    node.classList.add("is-showing");
+    clearTimeout(showEject._timer);
+    showEject._timer = setTimeout(() => {
+      node.classList.remove("is-showing");
+      node.hidden = true;
+    }, 1800);
+
+    // 同步更新剩餘彈數提示
+    const rem = action.remaining || {};
+    if (typeof rem.live === "number") {
+      $("hint").textContent = "剩餘 " + rem.live + " 實彈 / " + rem.blank + " 空包";
+    }
+  }
+
+  /** ⛓️ 手銬生效：座位震動 + 提示 */
+  function showSkipTurn(action) {
+    const name = action.playerName || "對手";
+    $("hint").textContent = "⛓️ " + name + " 行動被手銬封鎖，跳過本回合！";
+    const id = action.playerId;
+    const card =
+      id === state.youId ? $("me") : document.querySelector('.foe[data-id="' + id + '"]');
+    if (!card) return;
+    card.classList.remove("is-cuffed-hit");
+    void card.offsetWidth;
+    card.classList.add("is-cuffed-hit");
+    setTimeout(() => card.classList.remove("is-cuffed-hit"), 900);
+  }
+
   function showTaunt(action) {
     const node = $("bubble");
     node.textContent = action.text || "";
@@ -809,6 +875,14 @@
         break;
       case "ITEM_USED":
         $("hint").textContent = (action.playerName || "有人") + " 用了 " + (action.itemName || "道具");
+        break;
+      case "EJECT":
+        // 🍺 啤酒退彈：所有人都看得到退出來的那一顆
+        showEject(action);
+        break;
+      case "SKIP_TURN":
+        // ⛓️ 手銬生效：座位卡片震動 + 明確提示
+        showSkipTurn(action);
         break;
       case "SHOT": {
         flashGun(action.realShell ? "live" : "blank");

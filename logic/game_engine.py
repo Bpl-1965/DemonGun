@@ -129,6 +129,10 @@ class Player:
             "maxHp": self.max_hp,
             "dead": self.dead,
             "itemCount": len(self.items),
+            # 被手銬銬住的層數：>0 時前端顯示鎖鏈邊框與徽章
+            "skips": self.skips,
+            "nails": self.nails,
+            "sawnOff": self.sawn_off,
         }
 
 
@@ -188,6 +192,9 @@ class Game:
 
         # 台詞冷卻
         self._taunt_at: float = 0.0
+
+        # 被手銬跳過的玩家：等呼叫端把這些動作塞進回傳的動作串廣播出去
+        self._pending_skips: list[dict[str, Any]] = []
 
     # -- 建立 -------------------------------------------------------------
     @classmethod
@@ -523,6 +530,11 @@ class Game:
     #  換人 / 換輪
     # ------------------------------------------------------------------
     def _next_alive(self) -> Player | None:
+        """找下一位可行動的玩家；被手銬銬住的人會被扣一層 skips 並跳過。
+
+        跳過的過程會記錄在 self._pending_skips，由呼叫端轉成 SKIP_TURN 動作廣播，
+        前端才能顯示「⛓️ 行動被手銬封鎖，跳過本回合！」。
+        """
         alive = [p for p in self.players if not p.dead]
         if not alive:
             return None
@@ -530,9 +542,40 @@ class Game:
         order = self.players
         start = order.index(current) if current in order else -1
 
-        # 每次略過都會消耗一個 skips；掃完所有存活者的略過次數後，
-        # 再多走一圈即可找到下一位可行動玩家。
+        # 掃完所有存活者的略過次數後，再多走一圈即可找到下一位可行動玩家。
         max_steps = len(order) + sum(max(0, player.skips) for player in alive)
+        for _ in range(max_steps):
+            start = (start + 1) % len(order)
+            candidate = order[start]
+            if candidate.dead:
+                continue
+            if candidate.skips > 0:
+                # 只有「真正輪到這個人」時才扣一層，且立刻排進待廣播的動作
+                candidate.skips -= 1
+                self._log("skip", f"{candidate.name} 被手銬銬住，跳過這一回合。")
+                self._pending_skips.append(
+                    {
+                        "type": "SKIP_TURN",
+                        "playerId": candidate.id,
+                        "playerName": candidate.name,
+                        "skipsLeft": candidate.skips,
+                    }
+                )
+                continue
+            return candidate
+        raise RuntimeError("Unable to find an eligible player despite living players")
+
+    def _next_alive_after(self, starter: Player) -> Player | None:
+        """從 starter 之後找下一位可行動者（用於換輪起手者被手銬銬住的狀況）。"""
+        alive = [p for p in self.players if not p.dead]
+        if not alive:
+            return None
+        order = self.players
+        try:
+            start = order.index(starter)
+        except ValueError:
+            start = -1
+        max_steps = len(order) + sum(max(0, p.skips) for p in alive)
         for _ in range(max_steps):
             start = (start + 1) % len(order)
             candidate = order[start]
@@ -541,9 +584,25 @@ class Game:
             if candidate.skips > 0:
                 candidate.skips -= 1
                 self._log("skip", f"{candidate.name} 被手銬銬住，跳過這一回合。")
+                self._pending_skips.append(
+                    {
+                        "type": "SKIP_TURN",
+                        "playerId": candidate.id,
+                        "playerName": candidate.name,
+                        "skipsLeft": candidate.skips,
+                    }
+                )
                 continue
             return candidate
-        raise RuntimeError("Unable to find an eligible player despite living players")
+        return None
+
+    def _drain_skips(self) -> list[dict[str, Any]]:
+        """把待廣播的跳過動作取出（呼叫端負責接進動作串）。"""
+        if not self._pending_skips:
+            return []
+        out = list(self._pending_skips)
+        self._pending_skips.clear()
+        return out
 
     def _round_starter(self) -> Player | None:
         """一輪結束、重新裝彈後的第一個行動者：從第 1 個座位往後找第一個活人。"""
@@ -578,6 +637,20 @@ class Game:
             self.turn["chain"] = 0
             self.turn["started_at"] = self.clock()
             kept = bool(keep_turn and starter and previous and starter.id == previous.id)
+            # 換輪起手者若被手銬銬住，同樣要讓他被跳過（扣一層並廣播）
+            if starter is not None and starter.skips > 0:
+                starter.skips -= 1
+                self._log("skip", f"{starter.name} 被手銬銬住，跳過這一回合。")
+                actions.append(
+                    {
+                        "type": "SKIP_TURN",
+                        "playerId": starter.id,
+                        "playerName": starter.name,
+                        "skipsLeft": starter.skips,
+                    }
+                )
+                nxt = self._next_alive_after(starter)
+                self.turn["active_id"] = nxt.id if nxt else None
             actions.append(self._turn_action(kept=kept))
             return actions
 
@@ -588,6 +661,8 @@ class Game:
             return actions
 
         nxt = self._next_alive()
+        # 被手銬擋下的玩家：先廣播 SKIP_TURN，再廣播回合交給誰
+        actions.extend(self._drain_skips())
         self.turn["active_id"] = nxt.id if nxt else None
         self.turn["chain"] = 0
         self.turn["started_at"] = self.clock()

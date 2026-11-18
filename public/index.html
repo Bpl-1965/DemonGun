@@ -146,8 +146,10 @@
       </div>
 
       <!-- 橫向散彈槍（槍口朝左、木質握把在右）：換輪時整把上抬轉向 + 泵動裝填 -->
-      <div class="gun" id="gun" aria-hidden="true">
-        <svg viewBox="0 0 420 150" role="presentation">
+      <!-- 🍺 啤酒退彈展示：全房可見，1.8 秒後自動淡出 -->
+      <div class="eject-toast" id="ejectToast" hidden aria-live="polite"></div>
+
+      <div class="gun" id="gun" aria-hidden="true">        <svg viewBox="0 0 420 150" role="presentation">
           <defs>
             <linearGradient id="barrelGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#98a2ad" />

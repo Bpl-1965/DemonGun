@@ -1476,6 +1476,178 @@ body::after {
   color: var(--ink-mute);
 }
 
+/* ------------------------------------------------------------------ 🍺 退彈展示（全房可見） */
+.eject-toast {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.9rem 0.55rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid rgba(212, 175, 55, 0.7);
+  background: rgba(12, 6, 4, 0.96);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(0, 0, 0, 0.9);
+  transform: translate(-50%, -50%) scale(0.9);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  transition: opacity 0.22s ease, transform 0.24s var(--ease-smooth);
+}
+
+.eject-toast[hidden] {
+  display: none;
+}
+
+.eject-toast.is-showing {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* 飛出的彈殼（立體圓柱） */
+.eject-toast__shell {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 42px;
+  animation: ejectToss 0.62s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes ejectToss {
+  0% { transform: translate3d(-26px, 14px, 0) rotate(-52deg) scale(0.8); opacity: 0; }
+  45% { transform: translate3d(4px, -14px, 0) rotate(14deg) scale(1.08); opacity: 1; }
+  100% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); opacity: 1; }
+}
+
+.eject-toast__cap {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 0;
+  height: 18%;
+  border-radius: 50% 50% 20% 20%;
+}
+
+.eject-toast__body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 16%;
+  bottom: 16%;
+  border-radius: 2px;
+  box-shadow: inset -3px 0 4px rgba(0, 0, 0, 0.5);
+}
+
+.eject-toast__rim {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: 0;
+  height: 17%;
+  border-radius: 0 0 2px 2px;
+}
+
+/* 實彈：紅銅 */
+.eject-toast__shell--live .eject-toast__cap {
+  background: linear-gradient(180deg, #ff8a72, #c0200f 70%, #6d0c06);
+}
+.eject-toast__shell--live .eject-toast__body {
+  background: linear-gradient(90deg, #5e0d08 0%, #b81f10 26%, #f0432a 44%, #c02312 68%, #4d0a06 100%);
+}
+.eject-toast__shell--live .eject-toast__rim {
+  background: linear-gradient(180deg, #ffe9a6, #d4af37 45%, #8a6416);
+}
+
+/* 空包：藍灰 + 銀 */
+.eject-toast__shell--blank .eject-toast__cap {
+  background: linear-gradient(180deg, #7fa2b6, #2c4451 72%, #16222a);
+}
+.eject-toast__shell--blank .eject-toast__body {
+  background: linear-gradient(90deg, #1b242e 0%, #35505f 26%, #5b7f92 46%, #2f4a58 70%, #141b22 100%);
+}
+.eject-toast__shell--blank .eject-toast__rim {
+  background: linear-gradient(180deg, #f4f8fb, #c3ced8 42%, #7f8b96);
+}
+
+.eject-toast__text {
+  font-family: var(--font-display);
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------------ ⛓️ 手銬狀態 */
+/* 被上銬的座位：金屬鎖鏈邊框 + 紅色警示徽章 */
+.foe.is-cuffed,
+.me.is-cuffed {
+  border-color: #ff5a5a;
+  box-shadow:
+    0 0 0 1px rgba(255, 90, 90, 0.55),
+    0 0 18px rgba(185, 28, 28, 0.55),
+    inset 0 0 22px rgba(120, 10, 10, 0.45);
+}
+
+/* 鎖鏈花紋（用重複漸層畫出環扣感） */
+.foe.is-cuffed::before,
+.me.is-cuffed::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(200, 210, 220, 0.5) 0 3px,
+    transparent 3px 11px
+  );
+  mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
+  -webkit-mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
+  mask-composite: exclude;
+  -webkit-mask-composite: xor;
+  padding: 2px;
+  opacity: 0.85;
+}
+
+/* 警示徽章 */
+.cuffed-badge {
+  position: absolute;
+  top: -9px;
+  left: 8px;
+  padding: 0.05rem 0.42rem;
+  border-radius: 999px;
+  font-family: var(--font-num);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: linear-gradient(180deg, #e02424, #7a0d0d);
+  box-shadow: 0 0 12px rgba(255, 60, 60, 0.85);
+  animation: cuffedPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes cuffedPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(255, 60, 60, 0.55); }
+  50% { box-shadow: 0 0 18px rgba(255, 60, 60, 1); }
+}
+
+/* 真正被跳過時的鎖鏈震動 */
+.foe.is-cuffed-hit,
+.me.is-cuffed-hit {
+  animation: cuffShake 0.85s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes cuffShake {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+  12% { transform: translate3d(-7px, 2px, 0) rotate(-1.2deg); }
+  26% { transform: translate3d(6px, -3px, 0) rotate(1.1deg); }
+  40% { transform: translate3d(-5px, 2px, 0) rotate(-0.9deg); }
+  56% { transform: translate3d(4px, -2px, 0) rotate(0.7deg); }
+  72% { transform: translate3d(-3px, 1px, 0) rotate(-0.4deg); }
+  86% { transform: translate3d(2px, -1px, 0) rotate(0.2deg); }
+}
+
 /* ------------------------------------------------------------------ 動作列 */
 /* 按鈕列固定佔住底部：不捲動、不被壓縮，永遠在同一個視窗內 */
 .actions {

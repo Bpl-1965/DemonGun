@@ -34,8 +34,40 @@
       rapid_fire    SHOTS                         連射 N 發
       gacha         SHOTS                         隨機獲得 N 件道具
 
-  【新增「新的」效果】到 logic/effects.py 寫一個函式並 @EFFECTS.register("名字")，
-  不必改 game_engine.py。
+
+    1. 傷害與攻擊類
+
+    • "effect": "deal_damage"：{"DAMAGE": 2}（直接對對手造成幾點傷害）
+    • "effect": "cut_barrel"：{"DAMAGE": 1}（下一發傷害增加幾點）
+    • "effect": "nail_gun"：{"SHOTS": 3, "DAMAGE": 2}（接下來 SHOTS 發子彈都固定造成 DAMAGE 點傷害）
+    • "effect": "rapid_fire"：{"SHOTS": 2}（連續射擊幾發）
+
+    2. 治療與血量類
+
+    • "effect": "heal"：{"HP": 1} 或 {"MIN": 1, "MAX": 3}（固定回血，或隨機回 MIN～MAX 血）
+    • "effect": "random_heal"：{"CHANCE": 50, "MIN": 1, "MAX": 4}（有 CHANCE% 機率回 MIN～MAX 血）
+    • "effect": "gamble_heal"：{"CHANCE": 50, "MIN": 2, "MAX": 3, "HP": 1}（成功回 MIN～MAX 血，失敗反扣 HP 血）
+    • "effect": "max_hp_up"：{"HP": 1, "MAX_HP": 1}（扣 HP 點當前血量，換取 MAX_HP 點最大血量上限）
+
+    3. 看彈與退彈類
+
+    • "effect": "peek" / "peek_many" / "memory" / "memory_all"：{"COUNT": 2}（偷看或預知接下來幾發子彈）
+    • "effect": "peek_and_hurt"：{"COUNT": 2, "DAMAGE": 1}（偷看 COUNT 發子彈，但自己扣 DAMAGE 血）
+    • "effect": "eject_random"：{"MIN": 1, "MAX": 2}（隨機退出 MIN～MAX 發子彈）
+    • "effect": "eject" / "invert"：{}（留空即可，不需參數）
+
+    4. 回合控制與道具類
+
+    • "effect": "skip_next"：{"SKIPS": 1}（讓對手跳過接下來幾回合）
+    • "effect": "extra_turn"：{"CHANCE": 50}（有 CHANCE% 機率額外獲得回合）
+    • "effect": "gacha"：{"SHOTS": 2}（隨機抽幾件新道具）
+    • "effect": "steal_turn"：{}（留空即可，不需參數）
+
+    5. 通用額外參數（任何道具都能加）
+
+    • "CHANCE"：加在任何道具的 params 裡都能變成機率道具，支援數字 60、小數 0.6 或分數 "1/2"（例如 {"DAMAGE": 3, "CHANCE": 50} 就是 50% 機率打 3 滴血）。
+    • {參數名} 自動替換：只要在 "desc" 寫 {DAMAGE}、{COUNT}、{CHANCE}，遊戲就會自動把 params 裡的數字填進說明文字。
+
 
   【檢查】重開 app.py 時會自動檢查清單（缺欄位、id 重複、effect 沒實作、
   desc 用到不存在的 params、抽不到的孤兒道具），有問題會直接印在啟動訊息，
@@ -54,18 +86,18 @@ from typing import Any
 ITEMS: list[dict[str, Any]] = [
     {
         "id": "CIGARETTE", "name": "香菸", "icon": "🚬",
-        "desc": "回復 {HP} 點生命。",
-        "effect": "heal", "params": {"HP": 1}, "keeps_turn": True,
+        "desc": "回復 {HP} 點生命",
+        "effect": "heal_gacha", "params": {"HP": 1}, "keeps_turn": True,
     },
     {
         "id": "CIGARETTES", "name": "整包菸", "icon": "🧊",
         "desc": "回復 {MIN}～{MAX} 點生命。",
-        "effect": "heal", "params": {"MIN": 1, "MAX": 3}, "keeps_turn": True,
+        "effect": "heal", "params": {"MIN": 1, "MAX": 2}, "keeps_turn": True,
     },
     {
         "id": "PILLS", "name": "興奮劑", "icon": "💉",
-        "desc": "{CHANCE}% 機率回復 {MIN}～{MAX} 點生命。",
-        "effect": "random_heal", "params": {"CHANCE": 50, "MIN": 1, "MAX": 4},
+        "desc": "你有{CHANCE}的几率获得{SHOTS}物品并下一次射击并造成{DAMAGE}伤害。",
+        "effect": "gacha_cut_barrel", "params": {"CHANCE": 40, "SHOTS": 1, "DAMAGE": 2},
         "keeps_turn": True,
     },
     {
@@ -75,10 +107,10 @@ ITEMS: list[dict[str, Any]] = [
         "keeps_turn": True,
     },
     {
-        "id": "MANGLER", "name": "萬能工具", "icon": "🔧",
+        "id": "MANGLER", "name": "萬能", "icon": "🔧",
         "desc": "公開接下來 {COUNT} 發子彈，但會受到 {DAMAGE} 點傷害。",
         "effect": "peek_and_hurt",
-        "params": {"COUNT": 2, "DAMAGE": 1},
+        "params": {"COUNT": 4, "DAMAGE": 2},
         "keeps_turn": True,
     },
     {
@@ -92,14 +124,14 @@ ITEMS: list[dict[str, Any]] = [
         "effect": "rapid_fire", "params": {"SHOTS": 2}, "keeps_turn": True,
     },
     {
-        "id": "HANDCUFFS", "name": "手銬", "icon": "⛓️",
-        "desc": "銬住對手：對手下一回合被跳過。",
-        "effect": "skip_next", "params": {"SKIPS": 1}, "keeps_turn": True,
-    },
-    {
         "id": "NAILGROUP", "name": "釘槍", "icon": "🔫",
         "desc": "負荷最重：之後 {SHOTS} 發子彈都造成 {DAMAGE} 傷害。",
         "effect": "nail_gun", "params": {"SHOTS": 3, "DAMAGE": 2}, "keeps_turn": True,
+    },
+    {
+        "id": "HANDCUFFS", "name": "手銬", "icon": "⛓️",
+        "desc": "銬住對手：對手下一回合被跳過。",
+        "effect": "skip_next", "params": {"SKIPS": 1}, "keeps_turn": True,
     },
     {
         "id": "INVERTER", "name": "逆轉器", "icon": "🔄",
@@ -109,25 +141,25 @@ ITEMS: list[dict[str, Any]] = [
     {
         "id": "BUNCH", "name": "驚喜包", "icon": "🎁",
         "desc": "隨機抽 {SHOTS} 個道具。",
-        "effect": "gacha", "params": {"SHOTS": 3}, "keeps_turn": True,
+        "effect": "gacha", "params": {"SHOTS": 2}, "keeps_turn": True,
     },
     {
         "id": "VISION", "name": "預言鏡", "icon": "👁️",
         "desc": "預知下一輪前 {COUNT} 發子彈的順序（僅你自己看得到）。",
-        "effect": "memory", "params": {"COUNT": 4}, "keeps_turn": True,
+        "effect": "memory", "params": {"COUNT": 2}, "keeps_turn": True,
     },
 
     # ── 機率寫在道具自己的 params 裡：改這裡的 CHANCE 就改這件道具的命中率 ──
     {
         "id": "MOLOTOV", "name": "汽油彈", "icon": "🔥",
-        "desc": "{CHANCE}% 機率造成 {DAMAGE} 點傷害。",
+        "desc": "{CHANCE}% 機率造成 {DAMAGE} 點傷害。", 
         "effect": "deal_damage", "params": {"CHANCE": 60, "DAMAGE": 2},
         "keeps_turn": True,
     },
     {
         "id": "LUCKY_CIG", "name": "幸運菸", "icon": "🍀",
-        "desc": "{CHANCE}% 機率回復 {HP} 點生命（沒中就浪費）。",
-        "effect": "heal", "params": {"CHANCE": "1/2", "HP": 1},
+        "desc": "{CHANCE}% 機率回復 {HP} 點生命。",
+        "effect": "heal", "params": {"CHANCE": "20", "HP": 5},
         "keeps_turn": True,
     },
 ]

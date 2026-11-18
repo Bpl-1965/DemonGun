@@ -86,7 +86,23 @@ const document = {
   createElement(tag) {
     return makeEl(tag);
   },
-  querySelector() {
+  querySelector(sel) {
+    // 支援 client.js 用到的 `.foe[data-id="xxx"]` 與 `[data-hearts="xxx"]`
+    const m = String(sel || "").match(/\[data-(\w+)="([^"]+)"\]/);
+    if (!m) return null;
+    const key = m[1] === "id" ? "id" : m[1];
+    const value = m[2];
+    const pools = [
+      document.getElementById("opponents"),
+      document.getElementById("itemsGrid"),
+      document.getElementById("me"),
+    ];
+    for (const pool of pools) {
+      const found = (pool.children || []).find(
+        (c) => (c.dataset && c.dataset[key] === value) || c.getAttribute && c.getAttribute("data-" + key) === value
+      );
+      if (found) return found;
+    }
     return null;
   },
   addEventListener() {},
@@ -388,7 +404,94 @@ check("裝填鎖期間 → 道具 disabled", its.every((b) => b.disabled === tru
 its = sendState("p1", 99, 0);
 check("本回合已用滿 → 道具 disabled", its.every((b) => b.disabled === true), its.map((b) => b.disabled));
 
-console.log("7) 開局前（房間階段）");
+console.log("7) 🍺 啤酒退彈與 ⛓️ 手銬視覺");
+
+// runActions 是 Promise 佇列，動作用 async 播放；等一輪 microtask 再檢查
+function afterActions(fn) {
+  return sandbox.setTimeout(fn, 0);
+}
+
+// (a) EJECT 動作 → 退殼提示出現且顯示「實彈」
+fire("game:action", {
+  code: "ABCD",
+  actions: [
+    { type: "ITEM_USED", playerId: "p1", itemName: "啤酒" },
+    { type: "EJECT", playerId: "p1", shell: "LIVE", remaining: { live: 1, blank: 2, total: 3 } },
+  ],
+});
+
+afterActions(() => {
+  const toast = document.getElementById("ejectToast");
+  check("退彈提示出現", toast.hidden === false);
+  check("退彈提示顯示實彈", toast.innerHTML.indexOf("實彈") !== -1, String(toast.innerHTML).slice(0, 80));
+  check("退彈提示有紅色彈殼樣式", toast.innerHTML.indexOf("eject-toast__shell--live") !== -1);
+  check("剩餘彈數同步更新", document.getElementById("hint").textContent.indexOf("剩餘") !== -1,
+    document.getElementById("hint").textContent);
+
+  // (b) 空包彈退彈
+  fire("game:action", {
+    code: "ABCD",
+    actions: [{ type: "EJECT", playerId: "p1", shell: "BLANK", remaining: { live: 1, blank: 1, total: 2 } }],
+  });
+  afterActions(() => {
+    check("退彈提示顯示空包彈", toast.innerHTML.indexOf("空包彈") !== -1, String(toast.innerHTML).slice(0, 80));
+    check("空包彈用藍灰樣式", toast.innerHTML.indexOf("eject-toast__shell--blank") !== -1);
+
+    // (c) 手銬狀態
+    fire("room:update", handcuffState());
+    const foeCards = document.getElementById("opponents").children;
+    const cuffed = foeCards.filter((c) => c.classList && c.classList.contains("is-cuffed"));
+    check("被上銬的對手卡片標記 is-cuffed", cuffed.length === 1, cuffed.length);
+    const badge = cuffed.length
+      ? cuffed[0].children.filter((c) => c.className === "cuffed-badge")
+      : [];
+    check("顯示 ⛓️ 已上銬 徽章", badge.length === 1 && badge[0].textContent.indexOf("已上銬") !== -1,
+      badge.map((b) => b.textContent));
+
+    // (d) SKIP_TURN 動作 → 座位震動
+    fire("game:action", {
+      code: "ABCD",
+      actions: [{ type: "SKIP_TURN", playerId: "p2", playerName: "阿明", skipsLeft: 0 }],
+    });
+    afterActions(() => {
+      const hit = document.getElementById("opponents").children.filter(
+        (c) => c.classList && c.classList.contains("is-cuffed-hit")
+      );
+      check("跳過回合時座位播放鎖鏈震動", hit.length === 1, hit.length);
+      check("提示寫出被封鎖跳過", document.getElementById("hint").textContent.indexOf("跳過本回合") !== -1,
+        document.getElementById("hint").textContent);
+
+      console.log("8) 開局前（房間階段）");
+      runFinalSection();
+    });
+  });
+});
+
+function handcuffState() {
+  return {
+    code: "ABCD",
+    hostId: "p1",
+    youId: "p1",
+    seats: [
+      { id: "p1", name: "你", ready: true },
+      { id: "p2", name: "阿明", ready: true },
+    ],
+    game: {
+      public: {
+        phase: "playing", round: 2, activeId: "p1", activeName: "你", winnerId: null,
+        players: [player("p1", "你", 4), player("p2", "阿明", 2, { skips: 1 })],
+        log: [], remaining: { live: 2, blank: 1, total: 3 },
+      },
+      private: {
+        playerId: "p1", items: [{ id: "CIGARETTE", name: "香菸", icon: "🚬", desc: "回復 1 點生命。" }],
+        mods: {}, intel: [], itemsThisTurn: 0,
+      },
+    },
+    revealUntil: 0, revealMs: 0, serverNow: Date.now(), turnDeadline: Date.now() + 20000,
+  };
+}
+
+function runFinalSection() {
 fire("room:update", {
   code: "ABCD",
   hostId: "p1",
@@ -404,9 +507,10 @@ fire("room:update", {
   turnDeadline: 0,
 });
 check("用座位名單頂著顯示 1 個對手", foes().children.length === 1, foes().children.length);
-check("回合文字等待開局", document.getElementById("turnLabel").textContent.includes("等待開局"));
-check("btnSelf 變灰", document.getElementById("btnSelf").disabled === true);
+  check("回合文字等待開局", document.getElementById("turnLabel").textContent.includes("等待開局"));
+  check("btnSelf 變灰", document.getElementById("btnSelf").disabled === true);
 
-console.log(`\n結果：${pass} 通過 / ${fail} 失敗`);
-process.exit(fail === 0 ? 0 : 1);
+  console.log(`\n結果：${pass} 通過 / ${fail} 失敗`);
+  process.exit(fail === 0 ? 0 : 1);
+}
 

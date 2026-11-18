@@ -39,13 +39,51 @@ def register(*names: str) -> Callable[[Handler], Handler]:
 
 
 class EffectTable:
-    """給引擎用的查詢表（EFFECTS.get("heal") 這種用法）。"""
+    """給引擎用的查詢表（支援單一效果，以及用底線 _ 串接的任意多效果組合）。"""
+
+    def _resolve_chain(self, name: str) -> list[Handler] | None:
+        if not name:
+            return None
+        if name in _REGISTRY:
+            return [_REGISTRY[name]]
+        # 依名稱長度由長到短貪婪拆解（避免 peek_and_hurt 被拆錯）
+        known = sorted(_REGISTRY.keys(), key=len, reverse=True)
+        chain: list[Handler] = []
+        pos = 0
+        while pos < len(name):
+            matched = next((k for k in known if name.startswith(k, pos) and (pos + len(k) == len(name) or name[pos + len(k)] == "_")), None)
+            if not matched:
+                return None
+            chain.append(_REGISTRY[matched])
+            pos += len(matched) + 1
+        return chain if chain else None
 
     def get(self, name: Any) -> Handler | None:
-        return _REGISTRY.get(str(name)) if name else None
+        if not name:
+            return None
+        key = str(name)
+        if key in _REGISTRY:
+            return _REGISTRY[key]
+        chain = self._resolve_chain(key)
+        if not chain:
+            return None
+
+        def _chained_handler(game, player, target, params, item):
+            all_actions: list[dict[str, Any]] = []
+            keep = False
+            for fn in chain:
+                if getattr(game, "phase", "playing") != "playing" or player.dead:
+                    break
+                acts, k = fn(game, player, target, params, item)
+                if acts:
+                    all_actions.extend(acts)
+                keep = keep or bool(k)
+            return all_actions, keep
+
+        return _chained_handler
 
     def __contains__(self, name: Any) -> bool:
-        return str(name) in _REGISTRY
+        return self._resolve_chain(str(name)) is not None if name else False
 
     def names(self) -> list[str]:
         return sorted(_REGISTRY)

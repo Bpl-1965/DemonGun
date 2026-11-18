@@ -255,3 +255,30 @@ Senior Software Developer.
 
 
 
+
+- 🍺 啤酒退彈視覺 + ⛓️ 手銬修復與強化：
+  1. 啤酒退彈（全房可見）：
+     - 後端 EJECT 動作本來就帶 shell（LIVE/BLANK）與 remaining，並經 broadcast_actions
+       送給房裡所有人 ✅（無需修改）。
+     - 前端新增 showEject()：在賭桌中央彈出退殼提示，畫出飛出的紅色實彈殼或藍灰空包彈殼，
+       文字「🍺 退出了 1 發【實彈／空包彈】」，1.8 秒後自動淡出，
+       同時更新剩餘彈數（hint 顯示「剩餘 N 實彈 / M 空包」）。
+     - 新增 #ejectToast 容器與 .eject-toast 樣式（彈殼有拋飛進場動畫，只動 transform/opacity）。
+  2. 手銬（修 Bug + 視覺）：
+     - 修 Bug：原本 _next_alive() 會扣 skips 但沒有回傳動作，前端看不到跳過。
+       新增 _pending_skips 佇列，_next_alive() 扣減時記下 SKIP_TURN 動作，
+       由 _finish_turn 在 TURN_CHANGED 之前廣播 → 「真正輪到被銬玩家」時才扣，
+       且一定會廣播跳過事件（多人、連續道具都正常）。
+     - 換輪起手者若被銬住，也會扣一層並改由下一位先手（新增 _next_alive_after）。
+     - 上銬當下不會誤扣（實測 skips 從 0 → 1，回合仍保留）。
+     - Player.to_public() 增加 skips / nails / sawnOff，前端才能顯示狀態。
+     - 視覺：skips > 0 的座位（對手與自己）加 .is-cuffed 紅色鎖鏈邊框 +
+       「⛓️ 已上銬」紅色警示徽章；觸發跳過時播 .is-cuffed-hit 鎖鏈震動，
+       並提示「⛓️ XXX 行動被手銬封鎖，跳過本回合！」。
+  3. 另外修掉一個外部改動造成的損壞：config/items.py 被加入了一個語法錯誤的道具
+     （GetItems，params 含全形空格 U+3000，effect 是串接字串），會讓整個專案無法 import；
+     已移除，並補回被誤刪的 BEER2（烈酒）與 NAILGROUP（釘槍）。
+     保留 logic/effects.py 的「底線串接多效果」擴充功能與其他平衡數值調整。
+- 驗證：手銬實測 skips 0→1→0、動作串 [SHOT, SKIP_TURN, TURN_CHANGED]、回合正確跳過；
+  ui_smoke 新增 10 項退彈／手銬測試；check_frontend 68 個 id ✅、ui_smoke 54/0 ✅、
+  fx_smoke 28/0 ✅；並用 CDP 截圖確認退彈提示與鎖鏈徽章外觀。
