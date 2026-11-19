@@ -96,7 +96,7 @@ ITEMS: list[dict[str, Any]] = [
     },
     {
         "id": "PILLS", "name": "興奮劑", "icon": "💉",
-        "desc": "你有{CHANCE}的几率获得{SHOTS}物品并下一次射击并造成{DAMAGE}伤害。",
+        "desc": "有 {CHANCE}% 機率獲得 {SHOTS} 個道具，並讓下一次射擊造成 {DAMAGE} 點傷害。",
         "effect": "gacha_cut_barrel", "params": {"CHANCE": 40, "SHOTS": 1, "DAMAGE": 2},
         "keeps_turn": True,
     },
@@ -164,7 +164,7 @@ ITEMS: list[dict[str, Any]] = [
     },
     {
         "id": "OMEGA_MIX", "name": "終局混合物", "icon": "☠️",
-        "desc": "有{CHANCE}機率依序回血、提升{HP}血量上限、預知{COUNT}發、啟動釘槍、手銬、抽取道具並造成{DAMAGE}傷害。",
+        "desc": "有 {CHANCE}% 機率依序回血 {HP} 點、提升 {MAX_HP} 點血量上限、預知 {COUNT} 發子彈、啟動釘槍、銬住對手、抽取 {SHOTS} 個道具並造成 {DAMAGE} 點傷害。",
         "effect": "heal_max_hp_up_peek_cut_barrel_nail_gun_skip_next_gacha_deal_damage",
         "params": {"CHANCE": 10, "HP": 1, "MAX_HP": 1, "COUNT": 4, "DAMAGE": 2, "SHOTS": 1, "SKIPS": 1},
         "keeps_turn": True,

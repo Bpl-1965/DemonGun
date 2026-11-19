@@ -292,3 +292,25 @@ Senior Software Developer.
   - 最終驗證：check_frontend 68 IDs / 45 client IDs、ui_smoke 58/0、fx_smoke 29/0、
     validate_items/validate_loot 0 問題、Python compileall 通過；OMEGA 串接、私有四發預言、
     手銬跨裝填與新局重置測試通過。
+
+## 2026-11-19
+- 拉取 GitHub 最新版本（3 個 commit：584aa6d / 9574db0 / 7417032）並驗證：
+  - 新增：OMEGA_MIX（終局混合物，8 效果底線串接）、PILLS 改成 gacha_cut_barrel、
+    ACTION_PAUSE 機制（開槍揭曉期間鎖按鈕）、AI THINK_DELAY 改從 RULES 讀取。
+  - 本地未提交的 items.py 修改（刪除 MOLOTOV / LUCKY_CIG）已 stash 保留，未覆蓋遠端。
+- 找到並修掉的 bug：
+  1. PILLS 的 desc 是簡體中文（「几率获得…物品并」），與其他道具的繁體不一致 → 改寫成繁體。
+  2. OMEGA_MIX 的 desc 缺 %、量詞與單位（「有10機率…預知4發…造成2傷害」）→ 補成
+     「有 10% 機率依序回血 1 點、提升 1 點血量上限、預知 4 發子彈、…造成 2 點傷害。」
+- 已確認「不是 bug」的項目（逐一驗證過）：
+  - PILLS 40% 失敗率：實測 39/100 成功，符合 CHANCE=40 的設計（＝整體成功率）。
+  - OMEGA_MIX 10% 成功率：實測 26/200，符合設計；成功時 8 個效果全部依序觸發。
+  - 換輪後被銬玩家的 skips 看起來沒扣：那是正確行為（p2 還沒輪到，銬刑留待下次）。
+    真正交棒時實測 SKIP_TURN 有廣播、skips 1→0、回合正確交給 p1。
+  - 連續兩次手銬 skips 累積到 2、換輪時起手者被銬會被跳過，都正常。
+  - LOOT 總和 100%、15 件道具全部可抽到、OMEGA_MIX 機率 1%。
+- 端到端驗證：真的伺服器（15 件道具）+ 真實瀏覽器完整玩一局到結算，
+  **零 console 錯誤**；SHOT 間隔 0.84~3.23 秒無異常連發；12 局引擎壓力測試全部正常結束。
+- 另外發現：舊的伺服器進程會佔住 5000 埠，導致 /api/health 顯示舊的 14 件道具；
+  已清掉殘留進程並重啟（現為 15 件）。
+- 驗證：check_frontend 68 個 id ✅、ui_smoke 58/0 ✅、fx_smoke 29/0 ✅、道具驗證 0 問題 ✅。
