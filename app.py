@@ -115,7 +115,11 @@ AI_ACTION_INTERVAL_MIN = float(RULES.get("AI", {}).get("THINK_DELAY_MS", {}).get
 AI_ACTION_INTERVAL_MAX = float(RULES.get("AI", {}).get("THINK_DELAY_MS", {}).get("max", 2200)) / 1000.0
 # 本輪打光後的緩衝（毫秒）：讓最後一發的受擊動畫與「誰射了誰」完整呈現
 ROUND_END_PAUSE_MS = 2200
-SHOT_REVEAL_PAUSE_MS = 650
+# 每一發之後的緩衝（毫秒）：這段時間前端會鎖住按鈕，讓
+# 槍口火光 → 後座 → 螢幕震動 → 血紅閃光 這一串動畫播完再交還操作權。
+# 前端動畫總長約 1.5s（SHOT 420ms + 震動 450ms + 血紅 700ms），
+# 原本 650ms 會讓 UI 在動畫播到一半就回到可操作狀態，看起來像「沒有等待」。
+SHOT_REVEAL_PAUSE_MS = 1800
 
 # ---------------------------------------------------------------------------
 #  房況資料
@@ -678,19 +682,14 @@ def run_ai_loop(
         broadcast_actions(room, result.get("actions"))
         emit_state(room)
         if shot_deadline:
-            next_player = game.active_player()
-            release_shot_pause(
-                room,
-                game,
-                shot_deadline,
-                schedule=bool(
-                    next_player is None
-                    or not next_player.is_ai
-                    or step_index == AI_MAX_STEPS_PER_TURN - 1
-                ),
-            )
+            # ⚠ 一定要讓 release_shot_pause 負責排程（schedule=True）：
+            # 開槍鎖會讓下一次迴圈在 action_pause_active 時直接 return，
+            # 若這裡傳 False，AI 就再也沒有人排程 → 永久卡住。
+            release_shot_pause(room, game, shot_deadline, schedule=True)
+            return
         elif game.phase != "playing" or not game.is_ai_turn():
             schedule_after_broadcast(room)
+            return
 
     schedule_after_broadcast(room)
 

@@ -314,3 +314,24 @@ Senior Software Developer.
 - 另外發現：舊的伺服器進程會佔住 5000 埠，導致 /api/health 顯示舊的 14 件道具；
   已清掉殘留進程並重啟（現為 15 件）。
 - 驗證：check_frontend 68 個 id ✅、ui_smoke 58/0 ✅、fx_smoke 29/0 ✅、道具驗證 0 問題 ✅。
+
+- 修「開槍後沒有等待直接回到 UI」與「道具欄超過 8 件」：
+  1. 開槍後的鎖定時間太短：app.py 的 SHOT_REVEAL_PAUSE_MS 是 650ms，
+     但前端動畫（槍口火光 + 後座 420ms + 震動 450ms + 血紅閃光 700ms）約需 1.5 秒，
+     UI 在動畫播到一半就恢復可操作 → 改成 1800ms。
+     實測：開槍後 actionPauseUntil 剩 1.80s，期間再射回 ACTION_PAUSE，
+     鎖結束後可正常再射。
+  2. 順手修掉一個嚴重 bug（由上述改動暴露出來）：AI 開槍後若下一個還是 AI，
+     run_ai_loop 原本傳 schedule=False，而迴圈下一次迭代會被 action_pause_active 擋掉直接 return
+     → 沒有任何排程會再啟動 AI → 永久卡死（實測卡住 >15 秒）。
+     改成一律 schedule=True，由 release_shot_pause 負責在鎖結束後重新排程並 return。
+     修復後連續 3 局都完整跑到 gameover，無錯誤。
+  3. 道具欄超過 8 件：
+     - 後端 _grant_items 加硬上限（不論要求幾個都夾在 max_item_slots），
+       並在結尾再夾一次，即使未來邏輯被改壞也絕不溢出。實測 grant 5/10/20/50 → 5/8/8/8；
+       手動塞 11 件後再 grant 會夾回 8 件。
+     - 前端 renderItems 也自己裁一次（items.slice(0, slotCap)），
+       避免任何情況（伺服器版本不同 / 舊資料）畫出超過 8 格把版面撐壞。
+     - ui_smoke 新增測試：伺服器送出 11 件時只渲染 8 格。
+- 驗證：check_frontend 68 個 id ✅、ui_smoke 60/0 ✅、fx_smoke 29/0 ✅、
+  道具上限 5/8/8/8 ✅、AI 對局 3 次全部正常結束 ✅。

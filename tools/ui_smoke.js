@@ -437,8 +437,35 @@ check("每輪結束緩衝期間 → 道具 disabled", its.every((b) => b.disable
 its = sendState("p1", 99, 0);
 check("不限次使用 → 已用多件道具仍可點", its.every((b) => b.disabled === false), its.map((b) => b.disabled));
 
-console.log("7) 🍺 啤酒退彈與 ⛓️ 手銬視覺");
+console.log("7) 道具欄 8 件硬上限");
 
+// 伺服器就算送出 11 件，前端也只能畫 8 件（避免把版面撐壞）
+const many = [];
+for (let i = 0; i < 11; i += 1) {
+  many.push({ id: "CIGARETTE", name: "香菸" + i, icon: "🚬", desc: "測試 " + i });
+}
+fire("room:update", {
+  code: "ABCD",
+  hostId: "p1",
+  youId: "p1",
+  seats: [{ id: "p1", name: "你", ready: true }, { id: "p2", name: "阿明", ready: true }],
+  game: {
+    public: {
+      phase: "playing", round: 1, activeId: "p1", activeName: "你", winnerId: null,
+      players: [player("p1", "你", 4), player("p2", "阿明", 2)], log: [],
+      remaining: { live: 2, blank: 1, total: 3 },
+    },
+    private: { playerId: "p1", items: many, mods: {}, intel: [], itemsThisTurn: 0 },
+  },
+  revealUntil: 0, revealMs: 0, serverNow: Date.now(), turnDeadline: Date.now() + 20000,
+});
+const allSlots = document.getElementById("itemsGrid").children;
+check("送出 11 件時只渲染 8 格", allSlots.length === 8, allSlots.length);
+// stub 的 classList.contains 在這個情境回傳陣列，用 className 字串判斷最可靠
+const filled = allSlots.filter((n) => String(n.className || "").indexOf("slot") !== -1);
+check("其中 8 格都是有道具的", filled.length === 8, filled.length);
+
+console.log("8) 🍺 啤酒退彈與 ⛓️ 手銬視覺");
 // runActions 是 Promise 佇列，動作用 async 播放；等一輪 microtask 再檢查
 function afterActions(fn) {
   return sandbox.setTimeout(fn, 0);

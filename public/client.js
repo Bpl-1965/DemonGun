@@ -597,9 +597,16 @@
   function renderItems() {
     const grid = $("itemsGrid");
     if (!grid) return;
-    const items = (priv() && priv().items) || [];
+    const allItems = (priv() && priv().items) || [];
     const me = myPlayer();
     const p = pub();
+
+    // ⚠ 道具欄硬上限：後端有 8 件上限，但前端也要自己裁一次，
+    // 避免任何情況（舊存檔 / 伺服器版本不同）畫出超過 8 格把版面撐壞。
+    const slotCap = Number(
+      (state.config && state.config.LIMITS && state.config.LIMITS.MAX_ITEMS) || 8
+    ) || 8;
+    const items = allItems.slice(0, slotCap);
 
     // ── 道具可用的必要條件（全部成立才解鎖）──
     //   1. 遊戲進行中
@@ -697,9 +704,8 @@
       grid.appendChild(btn);
     });
 
-    // 空格補到 MAX_ITEMS（設定裡的道具欄位數），不要硬寫 3
-    const slots = (state.config && state.config.LIMITS && state.config.LIMITS.MAX_ITEMS) || 8;
-    const empty = Math.max(0, slots - items.length);
+    // 空格補到 slotCap（設定裡的道具欄位數），不要硬寫 3
+    const empty = Math.max(0, slotCap - items.length);
     for (let i = 0; i < empty; i += 1) {
       const slot = document.createElement("div");
       slot.className = "slot slot--empty";

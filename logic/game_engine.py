@@ -917,8 +917,10 @@ class Game:
 
     def _grant_items(self, player: Player, count: int) -> list[str]:
         granted: list[str] = []
+        # 硬上限：不論呼叫端要求幾個，道具欄永遠不會超過 max_item_slots()
+        cap_total = self.max_item_slots()
         for _ in range(max(0, int(count))):
-            if len(player.items) >= self.max_item_slots():
+            if len(player.items) >= cap_total:
                 break
             item_id: str | None = None
             # 原版：身上已經有 2 支菸時，把「cigarettes」從獎池裡移除再抽。
@@ -936,6 +938,9 @@ class Game:
                 continue
             player.items.append(item_id)
             granted.append(item_id)
+        # 最後再夾一次：即使上面的邏輯未來被改壞，也絕不讓欄位溢出
+        if len(player.items) > cap_total:
+            del player.items[cap_total:]
         return granted
 
     # 上限一律讀「這一局的快照」，不依賴全域設定（伺服器改設定才不會前後不一致）
