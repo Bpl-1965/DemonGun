@@ -1002,14 +1002,46 @@
     state.queue = state.queue.then(async () => {
       for (const action of actions || []) {
         if (action.type === "SHOT") {
+          // 受擊動畫（槍口火光 → 後座 → 震動 → 血紅閃光）大約 1.4s，
+          // 這段期間先把 UI 鎖住，播完才交還操作權。
+          // 伺服器也會送 actionPauseUntil，這裡是前端自己的保險
+          // （尤其是「最後一發」：SHOT 與 ROUND_END 是分兩次推播的）。
+          lockUiFor(1400);
           windupGun(action);
           await sleep(650);
         }
         applyAction(action);
-        if (action.type === "SHOT" || action.type === "TAUNT") await sleep(420);
+        if (action.type === "SHOT") {
+          await sleep(750);
+        } else if (action.type === "TAUNT") {
+          await sleep(420);
+        }
       }
     });
     return state.queue;
+  }
+
+  /** 用前端自己的截止時間鎖住 UI（與伺服器的 actionPauseUntil 取較晚者） */
+  function lockUiFor(ms) {
+    const until = Date.now() + state.serverOffset + Math.max(0, ms);
+    if (until > state.actionPauseUntil) {
+      state.actionPauseUntil = until;
+    }
+    // 只更新按鈕 / 道具的可用狀態，不要整頁重繪去打斷正在播的槍枝動畫
+    renderButtons();
+    renderItems();
+    if (state.actionPauseTimerDeadline !== state.actionPauseUntil) {
+      state.actionPauseTimerDeadline = state.actionPauseUntil;
+      clearTimeout(state.actionPauseTimer);
+      state.actionPauseTimer = setTimeout(
+        () => {
+          state.actionPauseTimer = null;
+          if (!actionPauseActive()) state.actionPauseUntil = 0;
+          renderAll();
+        },
+        Math.max(0, state.actionPauseUntil - (Date.now() + state.serverOffset)) + 20
+      );
+    }
   }
 
   // ---------------------------------------------------------------- 送意圖

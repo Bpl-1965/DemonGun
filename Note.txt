@@ -400,3 +400,19 @@ Senior Software Developer.
 - 驗證：ui_smoke 新增 3 項（開槍鎖期間 disabled、解鎖後恢復、多次更新後仍可按）
   → 63/0 ✅；fx_smoke 34/0 ✅；check_frontend 68 個 id ✅；
   真實瀏覽器（390x844 手機）截圖確認版面；AI 對局 2 局正常結束。
+
+- 修「最後一發開槍後 UI 太快回來」：
+  1. 前端 runActions 播放 SHOT 時原本只等 650 + 420 = 1070ms，
+     但實際動畫（槍口火光 → 後座 420ms → 震動 450ms → 血紅閃光 700ms）
+     需要約 1.4 秒，所以 UI 在動畫播到一半就解鎖。
+  2. 新增 lockUiFor(ms)：開槍時前端自己鎖住 UI 1400ms，
+     並與伺服器的 actionPauseUntil（1800ms）/ round_pause（2200ms）取較晚者。
+  3. 最後一發的流程確認：
+     - 伺服器把動作串切成兩段，前段只送 SHOT / TAUNT（立即），
+       後段 ROUND_END / RELOAD / AMMO_REVEAL / TURN_CHANGED 延後 2200ms。
+     - 前端 SHOT 播放 1400ms < 2200ms，所以換輪段抵達時動畫已經播完。
+  4. lockUiFor 只呼叫 renderButtons / renderItems，不做整頁重繪，
+     避免打斷正在播放的槍枝動畫。
+- 實測（真實瀏覽器，390ms 取樣）：開槍後 UI 鎖定最短 1868ms
+  （之前是 1070ms，動畫還沒播完就解鎖），最長 10.4s 為 AI 回合 + 換輪 + 裝填鎖的總和。
+- 驗證：check_frontend 68 個 id ✅、ui_smoke 63/0 ✅、fx_smoke 34/0 ✅。
