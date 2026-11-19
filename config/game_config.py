@@ -101,7 +101,7 @@ RULES: dict[str, Any] = {
     "ENEMY_NAMES": ["DeepSeek", "oppo", "denn", "rio"],
 
     # 回合逾時（毫秒）：太久沒動作 → 伺服器代替你對自己開一槍
-    "TURN_TIMEOUT_MS": 60_000,
+    "TURN_TIMEOUT_MS": 25_000,
 
     "AI": {
         "ENABLED": True,
@@ -118,7 +118,7 @@ RULES: dict[str, Any] = {
     # 每輪重新裝彈後由誰先手。
     #   "first"   = 永遠由第 1 個座位（房主 / 玩家）先手 —— 原版行為
     #   "shooter" = 誰打出最後一發就由誰繼續
-    "ROUND_START_TURN": "first",
+    "ROUND_START_TURN": "shooter",
 }
 
 
