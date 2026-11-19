@@ -87,7 +87,7 @@ ITEMS: list[dict[str, Any]] = [
     {
         "id": "CIGARETTE", "name": "香菸", "icon": "🚬",
         "desc": "回復 {HP} 點生命",
-        "effect": "heal_gacha", "params": {"HP": 1}, "keeps_turn": True,
+        "effect": "heal", "params": {"HP": 1}, "keeps_turn": True,
     },
     {
         "id": "CIGARETTES", "name": "整包菸", "icon": "🧊",
@@ -153,7 +153,7 @@ ITEMS: list[dict[str, Any]] = [
     {
         "id": "MOLOTOV", "name": "汽油彈", "icon": "🔥",
         "desc": "{CHANCE}% 機率造成 {DAMAGE} 點傷害。", 
-        "effect": "deal_damage", "params": {"CHANCE": 60, "DAMAGE": 2},
+        "effect": "deal_damage", "params": {"CHANCE": 20, "DAMAGE": 2},
         "keeps_turn": True,
     },
     {
@@ -164,9 +164,9 @@ ITEMS: list[dict[str, Any]] = [
     },
     {
         "id": "OMEGA_MIX", "name": "終局混合物", "icon": "☠️",
-        "desc": "依序回血、提升血量上限、預知 4 發、鋸短槍管、啟動釘槍、手銬、抽取道具並造成傷害。",
+        "desc": "有{CHANCE}機率依序回血、提升{HP}血量上限、預知{COUNT}發、啟動釘槍、手銬、抽取道具並造成{DAMAGE}傷害。",
         "effect": "heal_max_hp_up_peek_cut_barrel_nail_gun_skip_next_gacha_deal_damage",
-        "params": {"HP": 1, "MAX_HP": 1, "COUNT": 4, "DAMAGE": 2, "SHOTS": 1, "SKIPS": 1},
+        "params": {"CHANCE": 10, "HP": 1, "MAX_HP": 1, "COUNT": 4, "DAMAGE": 2, "SHOTS": 1, "SKIPS": 1},
         "keeps_turn": True,
     },
 ]
