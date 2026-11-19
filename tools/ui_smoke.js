@@ -521,7 +521,86 @@ afterActions(() => {
       check("提示寫出被封鎖跳過", document.getElementById("hint").textContent.indexOf("跳過本回合") !== -1,
         document.getElementById("hint").textContent);
 
-      console.log("8) 開局前（房間階段）");
+      console.log("9) 鎖定後道具必須能恢復（不能永久 disabled）");
+
+// 送一份「開槍揭曉鎖」狀態，再送一份解鎖狀態，道具要能重新按
+fire("room:update", {
+  code: "ABCD",
+  hostId: "p1",
+  youId: "p1",
+  seats: [{ id: "p1", name: "你", ready: true }, { id: "p2", name: "阿明", ready: true }],
+  game: {
+    public: {
+      phase: "playing", round: 2, activeId: "p1", activeName: "你", winnerId: null,
+      players: [player("p1", "你", 4), player("p2", "阿明", 2)], log: [],
+      remaining: { live: 2, blank: 1, total: 3 },
+    },
+    private: {
+      playerId: "p1",
+      items: [{ id: "CIGARETTE", name: "香菸", icon: "🚬", desc: "回復 1 點生命。" }],
+      mods: {}, intel: [], itemsThisTurn: 0,
+    },
+  },
+  revealUntil: 0, revealMs: 0,
+  actionPauseUntil: Date.now() + 3000, // 開槍鎖
+  serverNow: Date.now(), turnDeadline: Date.now() + 20000,
+});
+let lockSlots = itemSlots();
+check("開槍鎖期間 → 道具 disabled", lockSlots.every((b) => b.disabled === true),
+  lockSlots.map((b) => b.disabled));
+
+// 解鎖（伺服器推一份 actionPauseUntil = 0）
+fire("room:update", {
+  code: "ABCD",
+  hostId: "p1",
+  youId: "p1",
+  seats: [{ id: "p1", name: "你", ready: true }, { id: "p2", name: "阿明", ready: true }],
+  game: {
+    public: {
+      phase: "playing", round: 2, activeId: "p1", activeName: "你", winnerId: null,
+      players: [player("p1", "你", 4), player("p2", "阿明", 2)], log: [],
+      remaining: { live: 2, blank: 1, total: 3 },
+    },
+    private: {
+      playerId: "p1",
+      items: [{ id: "CIGARETTE", name: "香菸", icon: "🚬", desc: "回復 1 點生命。" }],
+      mods: {}, intel: [], itemsThisTurn: 0,
+    },
+  },
+  revealUntil: 0, revealMs: 0,
+  actionPauseUntil: 0,
+  serverNow: Date.now(), turnDeadline: Date.now() + 20000,
+});
+lockSlots = itemSlots();
+check("解鎖後 → 道具恢復可按", lockSlots.every((b) => b.disabled === false),
+  lockSlots.map((b) => b.disabled));
+
+// busy 卡住的自癒：模擬 busyAt 很久以前
+fire("room:update", {
+  code: "ABCD",
+  hostId: "p1",
+  youId: "p1",
+  seats: [{ id: "p1", name: "你", ready: true }, { id: "p2", name: "阿明", ready: true }],
+  game: {
+    public: {
+      phase: "playing", round: 2, activeId: "p1", activeName: "你", winnerId: null,
+      players: [player("p1", "你", 4), player("p2", "阿明", 2)], log: [],
+      remaining: { live: 2, blank: 1, total: 3 },
+    },
+    private: {
+      playerId: "p1",
+      items: [{ id: "CIGARETTE", name: "香菸", icon: "🚬", desc: "回復 1 點生命。" }],
+      mods: {}, intel: [], itemsThisTurn: 0,
+    },
+  },
+  revealUntil: 0, revealMs: 0, actionPauseUntil: 0,
+  serverNow: Date.now(), turnDeadline: Date.now() + 20000,
+});
+lockSlots = itemSlots();
+check("多次狀態更新後道具仍可按", lockSlots.every((b) => b.disabled === false),
+  lockSlots.map((b) => b.disabled));
+
+console.log("10) 開局前（房間階段）");
       runFinalSection();
     });
   });

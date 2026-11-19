@@ -381,3 +381,22 @@ Senior Software Developer.
      超過 8 秒就把 AI 迴圈重新拉起（最後一道保險）。
 - 驗證：AI 對局連續 6 局 + 移除 debug 端點後 3 局全部正常跑到 gameover；
   換輪先手 3 個情境都正確；check_frontend 68 個 id ✅、ui_smoke 60/0 ✅、fx_smoke 34/0 ✅。
+
+- 修「再點一次道具後 UI 卡住、所有道具都不能按」+ 說明卡改版：
+  1. 真 Bug（主因）：renderAll() 在 actionPauseActive() 期間會
+     「把所有道具格設 disabled 然後直接 return」——
+     解鎖後若 renderItems 的 sig 沒變就不會重建，道具就永遠停在 disabled。
+     改成：鎖定期間照常跑完整的 render，由 renderItems 的 canUse 統一判斷；
+     計時器只負責在鎖結束時叫回 UI。
+  2. renderItems 補上 busy 自癒：原本只有 renderButtons 會清掉卡住的 busy，
+     但道具的 disabled 是在 renderItems 算的，busy 一卡住道具就回不來。
+  3. 說明卡改版（手機 / iPad 友善）：
+     - 從「fixed 浮動定位」改成「插在道具欄上方的行內面板」（#itemCard 移到
+       .items-wrap 內、itemsGrid 前面）。
+     - 瀏覽器實測：position=relative、cardAboveGrid=true、
+       cardOverlapsButtons=false → 不會遮住道具欄與開槍按鈕。
+     - 說明卡上新增「使用」按鈕（等同再點一次道具）。
+     - 手機直向時自己的席位改成 flex:0 0 auto，把高度優先留給道具欄與按鈕。
+- 驗證：ui_smoke 新增 3 項（開槍鎖期間 disabled、解鎖後恢復、多次更新後仍可按）
+  → 63/0 ✅；fx_smoke 34/0 ✅；check_frontend 68 個 id ✅；
+  真實瀏覽器（390x844 手機）截圖確認版面；AI 對局 2 局正常結束。

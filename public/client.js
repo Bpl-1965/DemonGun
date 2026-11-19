@@ -581,9 +581,26 @@
       "</div>" +
       '<p class="item-card__desc">效果：' + esc(item.desc || "") + "</p>" +
       (wasted ? '<p class="item-card__warn">生命值已滿，現在用會浪費</p>' : "") +
-      '<p class="item-card__hint">再點一次道具即可使用</p>';
+      '<p class="item-card__hint">再點一次道具即可使用</p>' +
+      '<button type="button" class="item-card__use" data-use="' + esc(item.id) + '">使用</button>';
     card.hidden = false;
     card.classList.add("is-open");
+
+    // 說明卡上的「使用」按鈕（等同再點一次道具）
+    const useBtn = typeof card.querySelector === "function" ? card.querySelector(".item-card__use") : null;
+    if (useBtn) {
+      useBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (useBtn.disabled) return;
+        if (!isMyTurn() || revealActive() || roundPauseActive() || actionPauseActive()) {
+          disarmItem();
+          return;
+        }
+        const id = item.id;
+        disarmItem();
+        useItem(id);
+      });
+    }
   }
 
   function closeItemCard() {
@@ -622,6 +639,15 @@
     const maxPerTurn = Number(rawMax);
     const usedThisTurn = Number((priv() && priv().itemsThisTurn) || 0);
     const revealLocked = revealActive();
+
+    // 保險：busy 卡住（ack 掉了 / 伺服器重啟）不該讓道具永遠按不了。
+    // 這段原本只寫在 renderButtons，但道具的 disabled 也是在這裡算的，
+    // 少了這段的話 busy 一卡住，道具就再也回不來。
+    if (state.busy && state.busyAt && Date.now() - state.busyAt > 4000) {
+      state.busy = false;
+      state.busyAt = 0;
+    }
+
     const myTurnNow = isMyTurn();
     const alive = Boolean(me && !me.dead);
     // maxPerTurn <= 0 → 不限次數
@@ -762,30 +788,29 @@
   }
 
   function renderAll() {
-    if (actionPauseActive()) {
-      disarmItem();
-      $("btnSelf").disabled = true;
-      $("btnEnemy").disabled = true;
-      const grid = $("itemsGrid");
-      if (grid && typeof grid.querySelectorAll === "function") {
-        Array.prototype.forEach.call(grid.querySelectorAll(".slot"), (slot) => {
-          slot.disabled = true;
-        });
-      }
-      if (state.actionPauseTimerDeadline !== state.actionPauseUntil) {
-        clearTimeout(state.actionPauseTimer);
-        state.actionPauseTimerDeadline = state.actionPauseUntil;
-        state.actionPauseTimer = setTimeout(() => {
+    // ⚠ 鎖定期間不要「直接改 DOM 設 disabled 然後 return」：
+    // 那樣雖然當下鎖住了，但解鎖後如果 renderItems 的 sig 沒變就不會重建，
+    // 道具會永久停在 disabled（玩家再也按不了任何道具）。
+    // 正確做法是照常跑完整的 render，由 renderItems / renderButtons 依
+    // actionPauseActive() 自己算 canUse，這樣解鎖後一定會恢復。
+    if (!actionPauseActive()) {
+      clearTimeout(state.actionPauseTimer);
+      state.actionPauseTimer = null;
+      state.actionPauseTimerDeadline = 0;
+    } else if (state.actionPauseTimerDeadline !== state.actionPauseUntil) {
+      // 鎖定期間仍需一個計時器把 UI 叫回來（伺服器也會推一份狀態）
+      clearTimeout(state.actionPauseTimer);
+      state.actionPauseTimerDeadline = state.actionPauseUntil;
+      state.actionPauseTimer = setTimeout(
+        () => {
           state.actionPauseTimer = null;
           if (!actionPauseActive()) state.actionPauseUntil = 0;
           renderAll();
-        }, Math.max(0, state.actionPauseUntil - (Date.now() + state.serverOffset)) + 20);
-      }
-      return;
+        },
+        Math.max(0, state.actionPauseUntil - (Date.now() + state.serverOffset)) + 20
+      );
     }
-    clearTimeout(state.actionPauseTimer);
-    state.actionPauseTimer = null;
-    state.actionPauseTimerDeadline = 0;
+
     renderHud();
     renderFoes();
     renderSelf();

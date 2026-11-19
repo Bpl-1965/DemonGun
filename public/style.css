@@ -1287,7 +1287,7 @@ body::after {
 
 /* ------------------------------------------------------------------ 道具欄：木盒 / 鐵盒凹槽 */
 .items {
-  flex: 1 1 54%;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   display: grid;
@@ -1396,6 +1396,16 @@ body::after {
   white-space: nowrap;
 }
 
+/* 道具欄容器：說明卡與格子直向堆疊，說明卡展開時只會把格子往下推，
+   不會覆蓋任何按鈕 */
+.items-wrap {
+  flex: 1 1 54%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* ------------------------------------------------------------------ 道具選中態 */
 /* 第一次點擊＝選中（燙金高亮），第二次才使用 */
 .slot.is-armed {
@@ -1413,20 +1423,22 @@ body::after {
 }
 
 /* 說明卡：預設浮在道具欄上方（觸控裝置），桌面固定於賭桌中央上方 */
+/* 說明卡不再浮動定位（固定式彈窗在手機 / iPad 上會蓋住道具欄與開槍按鈕，
+   而且貼著螢幕邊緣容易被裁掉）。
+   改成「插在道具欄上方」的行內面板：跟著版面一起排、永遠不會擋住任何按鈕。 */
 .item-card {
-  position: fixed;
-  left: 50%;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
-  transform: translateX(-50%);
-  z-index: 125;
-  width: min(340px, 92vw);
-  padding: 0.7rem 0.8rem 0.6rem;
-  border-radius: 10px;
-  border: 1px solid var(--gold);
-  background: #14100a;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.9);
-  animation: cardIn 0.16s ease-out;
+  position: relative;
+  display: none;
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0 0 0.35rem;
+  padding: 0.5rem 0.65rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid rgba(212, 175, 55, 0.65);
+  background: linear-gradient(180deg, rgba(40, 28, 12, 0.96) 0%, rgba(16, 10, 4, 0.98) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 226, 170, 0.16);
   text-align: center;
+  animation: cardIn 0.16s ease-out;
 }
 
 .item-card.is-open {
@@ -1434,8 +1446,8 @@ body::after {
 }
 
 @keyframes cardIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
-  to { opacity: 1; transform: translateX(-50%); }
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .item-card__head {
@@ -2325,11 +2337,19 @@ body.is-awaiting .fx-layer::after {
     width: min(100%, 88vw);
   }
 
-  /* 說明卡固定在道具欄上方，不會被螢幕邊緣裁切，也不蓋住道具格 */
+  /* 說明卡是行內面板，手機上自然排在道具欄上方，不需要額外定位 */
   .item-card {
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 210px);
-    width: 94vw;
-    padding: 0.6rem 0.7rem 0.55rem;
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+  }
+
+  /* 手機直向時把高度優先留給道具欄與按鈕，自己的席位只留必要資訊 */
+  .me {
+    flex: 0 0 auto;
+  }
+
+  .items-wrap {
+    flex: 1 1 auto;
   }
 
   .item-card__use {

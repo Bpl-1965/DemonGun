@@ -260,7 +260,11 @@
         <div class="hearts" id="myHearts" aria-label="你的生命值"></div>
         <p class="me__intel" id="myIntel" hidden></p>
       </div>
-      <div class="items" id="itemsGrid"></div>
+      <div class="items-wrap">
+        <!-- 道具說明卡：插在道具欄上方，不會擋住任何按鈕（手機 / iPad 也不會被裁掉） -->
+        <div id="itemCard" class="item-card" hidden></div>
+        <div class="items" id="itemsGrid"></div>
+      </div>
     </section>
 
   </main>
@@ -372,9 +376,6 @@
 
 <!-- 道具說明提示框：跟著滑鼠跑，pointer-events:none 才不會擋點擊 -->
 <div id="itemTooltip" class="item-tooltip" hidden></div>
-
-<!-- 道具選中說明卡：單擊道具後出現，固定在道具欄上方（手機）或賭桌中央 -->
-<div id="itemCard" class="item-card" hidden></div>
 
 <!-- Socket.IO 客戶端：優先本機檔案（離線可用），失敗才退 CDN -->
 <script src="/vendor/socket.io.min.js" onerror="window.__sioLocalFailed = true"></script>
