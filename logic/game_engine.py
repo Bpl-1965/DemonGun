@@ -622,18 +622,23 @@ class Game:
             self.round += 1
             actions.extend(self._reload())
 
-            # 原版：重新裝彈後牌桌重來，固定由「玩家」這一側先手，
-            # 不管上一輪最後一發是誰打的、是不是空包續杯。
-            rule = str((self.config.get("RULES") or {}).get("ROUND_START_TURN", "first")).lower()
+            # 換輪先手：
+            #   "shooter"（本專案預設）＝ 誰打出本輪最後一發，下一輪就由誰先手；
+            #                          若他是對自己打空包彈，回合本來就還在他身上（保留）。
+            #   "first"                ＝ 永遠由第 1 個座位先手。
+            rule = str((self.config.get("RULES") or {}).get("ROUND_START_TURN", "shooter")).lower()
             previous = self.active_player()
-            if rule == "shooter" and keep_turn:
+            if rule == "shooter" and previous is not None and not previous.dead:
+                # 打光這一發的人繼續先手（不論他是打敵人還是打自己）
                 starter = previous
             else:
                 starter = self._round_starter()
             self.turn["active_id"] = starter.id if starter else None
             self.turn["chain"] = 0
             self.turn["started_at"] = self.clock()
-            kept = bool(keep_turn and starter and previous and starter.id == previous.id)
+            # 用「打光最後一發的人」判斷是否續手，而不是只看 keep_turn：
+            # keep_turn 只在自射空包時為真，但打光最後一發不論打誰都該由他先手。
+            kept = bool(starter and previous and starter.id == previous.id)
             # 換輪起手者若被手銬銬住，同樣要讓他被跳過（扣一層並廣播）
             if starter is not None and starter.skips > 0:
                 starter.skips -= 1
@@ -1203,8 +1208,18 @@ def _live_chance(game: Game) -> float:
 
 def choose_ai_intent(game: Game) -> dict[str, Any]:
     """
-    AI 的決策：看得懂「剩幾實幾空」、自己的血、手上的道具。
-    回傳 {"type": "SHOOT"|"USE_ITEM", "payload": {...}}
+    AI 的決策：看得懂「剩幾實幾空」、自己的血、手上的道具、對手的血。
+
+    決策優先序（每一步都先問「這一步划不划算」）：
+      1. 快死了 → 先回血（含幸運菸這種機率回血）
+      2. 確定是實彈 → 先上增益（手鋸 / 釘槍），再打血最少的對手
+      3. 確定是空包 → 對自己開槍保留回合（有上限，避免無限循環）
+      4. 不確定 → 先用資訊類道具（預言鏡 / 萬能 / 啤酒）問出答案，增加確定性
+      5. 有逆轉器 + 確定實彈且對手血少 → 逆轉後打自己（變成空包，保留回合）
+      6. 手銬自己跳過之前先銬住對手
+      7. 基本盤：實彈機率高 → 打敵人；低 → 打自己（血夠的話）
+
+    只使用 config/items.py 裡真的存在的道具 id。
     """
     ai = game.active_player()
     if ai is None:
@@ -1215,48 +1230,84 @@ def choose_ai_intent(game: Game) -> dict[str, Any]:
     p_live = _live_chance(game)
     chain = game.turn.get("chain", 0)
     last_shell = len(game.chamber) <= 1
+    hp_missing = max(0, ai.max_hp - ai.hp)
 
     items = list(ai.items)
     has = lambda item_id: item_id in items  # noqa: E731
 
-    # 1. 快死了 → 先補血
-    if ai.hp <= 1 and ai.hp < ai.max_hp:
-        for heal_id in ("FIRST_AID", "CIGARETTES", "CIGARETTE", "PILLS"):
+    # 打哪個對手最划算：血最少的活人
+    foes = [p for p in game.players if p.id != ai.id and not p.dead]
+    weakest = min(foes, key=lambda p: p.hp) if foes else None
+    target = weakest.id if weakest else (opponent.id if opponent else None)
+
+    def heal_first() -> dict[str, Any] | None:
+        """低血時找能回血的道具。"""
+        if ai.hp > 1 or hp_missing <= 0:
+            return None
+        # 確定回血優先（香菸 / 整包菸），再考慮機率型的
+        for heal_id in ("CIGARETTES", "CIGARETTE", "LUCKY_CIG"):
             if has(heal_id):
                 return {"type": "USE_ITEM", "payload": {"item_id": heal_id}}
+        return None
 
-    # 2. 確定是實彈 → 先用增益，再打敵人
+    # ── 1. 快死了先回血 ──
+    heal = heal_first()
+    if heal:
+        return heal
+
+    # ── 2. 確定是實彈 → 先上增益再打人 ──
     if known == LIVE:
-        if has("HANDSAW") and opponent is not None and opponent.hp > 1:
+        if has("HANDSAW") and weakest is not None and weakest.hp > 1:
             return {"type": "USE_ITEM", "payload": {"item_id": "HANDSAW"}}
-        if has("INVERTER") and opponent is not None and opponent.hp > 2:
-            # 逆轉成空包，然後打自己保留回合（會變成空包）
-            return {"type": "USE_ITEM", "payload": {"item_id": "INVERTER"}}
-        return {"type": "SHOOT", "payload": {"target_id": opponent.id if opponent else None}}
+        if has("NAILGROUP") and weakest is not None and weakest.hp > 2:
+            return {"type": "USE_ITEM", "payload": {"item_id": "NAILGROUP"}}
+        return {"type": "SHOOT", "payload": {"target_id": target}}
 
-    # 3. 確定是空包 → 對自己開槍（保留回合），但不包括最後一發
+    # ── 3. 確定是空包 → 對自己開槍保留回合（避免無限連鎖）──
     if known == BLANK:
         if chain < MAX_CHAIN and not last_shell:
             return {"type": "SHOOT", "payload": {"target_id": None}}
-        if has("BURNER"):
-            return {"type": "USE_ITEM", "payload": {"item_id": "BURNER"}}
-        return {"type": "SHOOT", "payload": {"target_id": opponent.id if opponent else None}}
+        return {"type": "SHOOT", "payload": {"target_id": target}}
 
-    # 4. 不知道是什麼 → 用資訊類道具換確定性
-    if has("MANGLER"):
-        return {"type": "USE_ITEM", "payload": {"item_id": "MANGLER"}}
-    if has("CHAMPAGNE") and len(game.chamber) >= 2:
-        return {"type": "USE_ITEM", "payload": {"item_id": "CHAMPAGNE"}}
+    # ── 4. 不確定 → 先用資訊類道具問出答案 ──
+    # 預言鏡/萬能只有在自己 Intel 是空的時候才值得用
+    if not ai.intel:
+        if has("VISION"):
+            return {"type": "USE_ITEM", "payload": {"item_id": "VISION"}}
+        if has("MANGLER") and ai.hp > 1:
+            # 萬能會讓自己受 1 傷，血夠才用
+            return {"type": "USE_ITEM", "payload": {"item_id": "MANGLER"}}
+        if has("BEER") and len(game.chamber) > 0:
+            # 啤酒直接退掉當前這發，等於把不確定變少
+            return {"type": "USE_ITEM", "payload": {"item_id": "BEER"}}
 
-    # 5. 健康的時候可以銬一下對手
-    if has("HANDCUFFS") and opponent is not None and opponent.skips == 0 and p_live > 0.3:
-        return {"type": "USE_ITEM", "payload": {"item_id": "HANDCUFFS", "target_id": opponent.id}}
+    # ── 5. 逆轉器：確定是實彈且對手血少 → 逆轉成空包打自己，保留回合 ──
+    # （上面的 known == LIVE 分支已經處理實彈，這裡處理「不確定但偏實彈」）
+    if has("INVERTER") and known != BLANK and p_live > 0.6 and not last_shell:
+        return {"type": "USE_ITEM", "payload": {"item_id": "INVERTER"}}
 
-    # 6. 基本盤：實彈機率高就打敵人，低就打自己
+    # ── 6. 手銬：在自己之後輪到對手時先銬住他 ──
+    if has("HANDCUFFS") and weakest is not None and weakest.skips == 0:
+        return {"type": "USE_ITEM", "payload": {"item_id": "HANDCUFFS", "target_id": weakest.id}}
+
+    # ── 7. 汽油彈：對手血少時直接炸 ──
+    if has("MOLOTOV") and weakest is not None and weakest.hp <= 2:
+        return {"type": "USE_ITEM", "payload": {"item_id": "MOLOTOV", "target_id": weakest.id}}
+
+    # ── 8. 驚喜包：手牌少的時候補牌（省著用，手上還有牌就先不抽）──
+    if has("BUNCH") and len(items) <= 2:
+        return {"type": "USE_ITEM", "payload": {"item_id": "BUNCH"}}
+
+    # ── 9. 基本盤：實彈機率高就打敵人，低就打自己 ──
     expected_self_damage = p_live * BASE_DAMAGE
-    if p_live < SELF_SHOT_THRESHOLD and expected_self_damage < ai.hp * 0.6 and not last_shell:
+    if (
+        p_live < SELF_SHOT_THRESHOLD
+        and expected_self_damage < ai.hp * 0.6
+        and not last_shell
+        and chain < MAX_CHAIN
+    ):
         return {"type": "SHOOT", "payload": {"target_id": None}}
-    return {"type": "SHOOT", "payload": {"target_id": opponent.id if opponent else None}}
+    return {"type": "SHOOT", "payload": {"target_id": target}}
 
 
 def ai_think_delay(game: Game) -> float:

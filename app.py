@@ -169,6 +169,11 @@ class Room:
     # 本輪打光後的緩衝：到期時間（epoch 秒）；0 = 沒有緩衝。
     # 期間前端把動作按鈕鎖住，等最後一發的動畫播完。
     round_pause_until: float = 0.0
+    # 鎖定期間的重試排程（避免同一組鎖被排進多個計時器）
+    pause_retries: set = field(default_factory=set)
+    # AI 看門狗狀態：輪到 AI 卻沒在推進時記下起始時間
+    ai_idle_since: float = 0.0
+    watchdog_running: bool = False
     action_pause_until: float = 0.0
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -366,13 +371,16 @@ def action_pause_active(room: Room) -> bool:
 
 
 def advance_ai_epoch(room: Room, actions: list[dict[str, Any]] | None = None) -> None:
-    """Invalidate sleeping AI workers for every accepted action and turn boundary."""
+    """讓正在睡覺的 AI worker 作廢（回合/狀態已被其他路徑改掉）。
+
+    ⚠ 只遞增 1，不要依動作內容再多加：
+    以前每次遇到 TURN_CHANGED / ROUND_END / RELOAD 就多加一次，
+    導致剛成立的 AI worker 立刻變成「舊世代」而自我作廢，
+    又沒有人接手 → AI 回合永久卡住。
+    """
     room.ai_epoch += 1
-    boundary_types = {"TURN_CHANGED", "SKIP_TURN", "ROUND_END", "RELOAD"}
-    room.ai_epoch += sum(
-        1 for action in (actions or [])
-        if isinstance(action, dict) and action.get("type") in boundary_types
-    )
+    # 有任何動作被接受 → 看門狗重新計時
+    room.ai_idle_since = 0.0
 
 
 def arm_shot_pause(room: Room) -> float:
@@ -384,15 +392,16 @@ def release_shot_pause(room: Room, game: Game, deadline: float, *, schedule: boo
     generation = room.generation
 
     def worker() -> None:
-        socketio.sleep(max(0.0, deadline - time.time()))
+        socketio.sleep(max(0.0, deadline - time.time()) + 0.02)
         with room.lock:
             if room.generation != generation or room.game is not game:
                 return
-            if room.action_pause_until != deadline:
-                return
-            room.action_pause_until = 0.0
+            # 只清掉「這一發」的鎖。若已經被別的計時器清掉（<= 現在）也沒關係，
+            # 重點是一定要繼續往下排程，否則 AI 回合就再也沒有人推進。
+            if room.action_pause_until <= deadline + 0.05:
+                room.action_pause_until = 0.0
         emit_state(room)
-        if schedule and not round_pause_active(room):
+        if schedule:
             schedule_after_broadcast(room)
 
     socketio.start_background_task(worker)
@@ -503,6 +512,9 @@ def clear_timers(room: Room) -> None:
     room.reveal_until = 0.0
     room.reveal_ms = 0
     room.action_pause_until = 0.0
+    room.ai_idle_since = 0.0
+    if room.pause_retries:
+        room.pause_retries.clear()
 
 
 def arm_reveal_timer(room: Room) -> bool:
@@ -612,6 +624,80 @@ def schedule_ai_loop(room: Room) -> None:
     socketio.start_background_task(run_ai_loop, room, generation, ai_epoch)
 
 
+# ---------------------------------------------------------------------------
+#  AI 看門狗：最後一道保險
+# ---------------------------------------------------------------------------
+AI_WATCHDOG_INTERVAL = 1.0     # 每秒巡一次
+AI_WATCHDOG_STALL_S = 4.0      # AI 回合超過這麼久沒有任何動作就先等
+AI_WATCHDOG_RESTART_S = 8.0    # 超過這麼久就把 AI 迴圈重新拉起
+
+
+def ai_watchdog_tick(room: Room) -> None:
+    """定期檢查：如果輪到 AI、卻沒有任何計時器 / 鎖在推進，就重啟 AI 迴圈。
+
+    為什麼需要：AI 的推進由好幾條路徑接力（開槍鎖、換輪緩衝、裝填鎖、回合計時），
+    任一條路徑提早 return 都會讓「下一步」沒有人排程，整局就卡在 AI 回合。
+    這個看門狗只負責兜底，正常情況幾乎不會動作。
+    """
+    game = room.game
+    if game is None or game.phase != "playing":
+        room.ai_idle_since = 0.0
+        return
+
+    active = game.active_player()
+    if active is None or not active.is_ai or active.dead:
+        room.ai_idle_since = 0.0
+        return
+
+    # 有任何鎖 / 計時器正在跑 → 代表有人在推進，不用管
+    now = time.time()
+    if (
+        room.is_reveal_locked()
+        or room.action_pause_until > now
+        or room.round_pause_until > now
+    ):
+        room.ai_idle_since = 0.0
+        return
+
+    if room.ai_idle_since <= 0:
+        room.ai_idle_since = now
+        return
+
+    idle = now - room.ai_idle_since
+    if idle < AI_WATCHDOG_STALL_S:
+        return
+
+    # 真的卡住了 → 換一個新的 epoch 並重新排 AI 迴圈
+    if idle >= AI_WATCHDOG_RESTART_S:
+        room.ai_idle_since = now
+        with room.lock:
+            if room.game is not game or game.active_player() is not active:
+                return
+            advance_ai_epoch(room)
+        emit_state(room)
+        schedule_ai_loop(room)
+
+
+def start_room_watchdog(room: Room) -> None:
+    """每個房間啟動時跑一個常駐的看門狗（同一房間只會有一個）。"""
+    if room.watchdog_running:
+        return
+    room.watchdog_running = True
+    generation = room.generation
+
+    def worker() -> None:
+        while True:
+            socketio.sleep(AI_WATCHDOG_INTERVAL)
+            if room.generation != generation or ROOMS.get(room.code) is not room:
+                return
+            try:
+                ai_watchdog_tick(room)
+            except Exception:  # noqa: BLE001 - 看門狗本身絕不能掛掉
+                continue
+
+    socketio.start_background_task(worker)
+
+
 def run_ai_loop(
     room: Room, expected_generation: int | None = None, expected_epoch: int | None = None
 ) -> None:
@@ -645,11 +731,29 @@ def run_ai_loop(
         # 避免多個動作疊在一起造成畫面卡頓。
         socketio.sleep(AI_ACTION_INTERVAL_MIN + random.random() * (AI_ACTION_INTERVAL_MAX - AI_ACTION_INTERVAL_MIN))
         with room.lock:
+            # Epoch 被別的路徑改掉（例如換輪的兩段廣播）→ 這一輪 worker 作廢，
+            # 但不能就這樣放著：若現在還是 AI 的回合，要有人重新排程，
+            # 否則整局會卡在 AI 回合不動。
+            if room.generation != generation or room.game is not game or room.ai_epoch != my_epoch:
+                still_ai_turn = (
+                    room.generation == generation
+                    and room.game is game
+                    and game.phase == "playing"
+                    and not room.is_reveal_locked()
+                    and not round_pause_active(room)
+                    and not action_pause_active(room)
+                    and game.active_player() is not None
+                    and game.active_player().is_ai
+                    and not game.active_player().dead
+                )
+                # 只有「本迴圈已經把回合交回 AI、且確實有動作過」才重排，
+                # 避免與新 worker 互相排程造成風暴。
+                if still_ai_turn and step_index > 0:
+                    socketio.sleep(0.05)
+                    schedule_after_broadcast(room)
+                return
             if (
-                room.generation != generation
-                or room.game is not game
-                or room.ai_epoch != my_epoch
-                or game.phase != "playing"
+                game.phase != "playing"
                 or room.is_reveal_locked()
                 or round_pause_active(room)
                 or action_pause_active(room)
@@ -668,16 +772,20 @@ def run_ai_loop(
                 return
             advance_ai_epoch(room, result.get("actions"))
             my_epoch = room.ai_epoch
-            shot_deadline = (
-                arm_shot_pause(room)
-                if any(a.get("type") == "SHOT" for a in result.get("actions", []))
-                else 0.0
-            )
+            # AI 不需要額外的「開槍鎖」：它每個動作之間本來就會等 1.5~2.2 秒
+            # （見上面的 AI_ACTION_INTERVAL_*），這段時間足以播完動畫。
+            # 若這裡還加一把會過期的鎖，反而讓 AI 迴圈在 action_pause_active 時
+            # 自我作廢、又沒有人接手 → 永久卡在 AI 回合。
+            shot_deadline = 0.0
 
-        # 若這一步把本輪打光，會切成兩段廣播並緩衝 2.2 秒，AI 迴圈停在這裡
+        # 若這一步把本輪打光，會切成兩段廣播並緩衝 2.2 秒，AI 迴圈停在這裡。
+        # 注意：即使是換輪，也要讓 release_shot_pause 負責排程，
+        # 否則解鎖後沒有任何人會把 AI 迴圈接回來（會卡在 AI 回合）。
         if broadcast_with_round_end_pause(room, result.get("actions")):
             if shot_deadline:
-                release_shot_pause(room, game, shot_deadline, schedule=False)
+                release_shot_pause(room, game, shot_deadline, schedule=True)
+            # 沒開槍也會走到這裡（例如 AI 用道具打光本輪）：
+            # 由換輪緩衝自己的 worker 負責接回排程，這裡不用再排。
             return
         broadcast_actions(room, result.get("actions"))
         emit_state(room)
@@ -793,7 +901,46 @@ def schedule_after_broadcast(room: Room, actions: list[dict[str, Any]] | None = 
         clear_timers(room)
         return
 
-    if action_pause_active(room) or round_pause_active(room):
+    # 鎖定期間不能動作，但也不能直接 return 就結束——
+    # 那樣如果剛好沒有人負責解鎖，整局就再也沒有人被排程（永久卡住）。
+    # 改成等鎖到期後自己再呼叫一次，保證一定有下一步。
+    pause_left = max(
+        room.action_pause_until - time.time(),
+        room.round_pause_until - time.time(),
+        0.0,
+    )
+    if pause_left > 0:
+        pause_key = (
+            round(room.action_pause_until, 3),
+            round(room.round_pause_until, 3),
+        )
+        if pause_key not in room.pause_retries:
+            room.pause_retries.add(pause_key)
+            generation = room.generation
+            game_ref = game
+
+            def retry() -> None:
+                # 睡到鎖結束為止；期間若鎖被延長就再算一次，絕不中途放棄
+                while True:
+                    with room.lock:
+                        if room.generation != generation or room.game is not game_ref:
+                            room.pause_retries.discard(pause_key)
+                            return
+                        left = max(
+                            room.action_pause_until - time.time(),
+                            room.round_pause_until - time.time(),
+                            0.0,
+                        )
+                    if left <= 0:
+                        break
+                    socketio.sleep(min(left, 0.25) + 0.02)
+                with room.lock:
+                    room.pause_retries.discard(pause_key)
+                    if room.generation != generation or room.game is not game_ref:
+                        return
+                schedule_after_broadcast(room)
+
+            socketio.start_background_task(retry)
         return
 
     if game.phase == "gameover":
@@ -1185,6 +1332,8 @@ def start_game(room: Room, by_seat: Seat | None) -> dict[str, Any]:
     # （原本先 emit_state 才排程，第一份狀態的 turnDeadline 是 0，前端沒有倒數。）
     schedule_after_broadcast(room)
     emit_state(room)
+    # 啟動 AI 看門狗（同一房間只會有一個）
+    start_room_watchdog(room)
     return {"ok": True}
 
 

@@ -352,3 +352,32 @@ Senior Software Developer.
   自己掉血 → bodyShaking=true、bloodHot=true、myHurt=true ✅
   fx_smoke 新增 5 項（對手受傷不紅屏、自己受傷仍紅屏）；
   check_frontend 68 個 id ✅、ui_smoke 60/0 ✅、fx_smoke 34/0 ✅。
+
+## 2026-11-19（下半）
+- 三項需求：AI 更聰明、換輪由打光的人先手、最後一發自射保留回合：
+  1. 換輪先手（修 Bug）：原本條件是 `rule == "shooter" and keep_turn`，
+     但 keep_turn 只在「自射空包」時為真，所以對敵人打光最後一發時
+     會走 _round_starter() 回到第一個人。改成「由打光那一發的人先手」，
+     不論他打敵人還是打自己。實測 p2 打光 → 下一輪 active 仍是 p2。
+  2. 最後一發自射保留回合：自射空包本來就保留；自射實彈打光最後一發時
+     也因為走換輪分支而保留（符合需求）。
+  3. AI 變聰明（重寫 choose_ai_intent）：
+     - 修掉引用不存在道具的 bug（FIRST_AID / BURNER / CHAMPAGNE）。
+     - 現在會用全部真實道具：香菸/整包菸/幸運菸補血、手鋸與釘槍增益、
+       預言鏡/萬能/啤酒獲取資訊、逆轉器、手銬、汽油彈、驚喜包。
+     - 打血最少的對手（不再固定打第一個）。
+     - 實測：不確定時會依序用 VISION / MANGLER / BEER / BUNCH / HANDCUFFS / MOLOTOV。
+- 修 AI 回合永久卡住（重大 Bug，找到多層原因）：
+  a. run_ai_loop 開槍後會 arm_shot_pause，而迴圈下一次迭代一看到 action_pause_active
+     就 return；若 release_shot_pause 那條路徑（換輪時 schedule=False、
+     或 deadline 比對失敗）沒有接手，AI 就再也沒有人排程 → 卡死。
+     解法：AI 不需要額外的開槍鎖（它每個動作之間本來就等 1.5~2.2 秒），
+     移除 arm_shot_pause 的呼叫。
+  b. advance_ai_epoch 原本會依動作內容多遞增 epoch，讓剛成立的 AI worker
+     立刻變成舊世代而自我作廢 → 改成只遞增 1。
+  c. schedule_after_broadcast 在碰到鎖時直接 return，沒有人負責接續 →
+     改成排一個「睡到鎖結束為止」的重試 worker（pause_retries 去重）。
+  d. 加 AI 看門狗 start_room_watchdog：每秒巡一次，輪到 AI 卻沒有任何鎖在推進
+     超過 8 秒就把 AI 迴圈重新拉起（最後一道保險）。
+- 驗證：AI 對局連續 6 局 + 移除 debug 端點後 3 局全部正常跑到 gameover；
+  換輪先手 3 個情境都正確；check_frontend 68 個 id ✅、ui_smoke 60/0 ✅、fx_smoke 34/0 ✅。
