@@ -105,7 +105,7 @@ RULES: dict[str, Any] = {
 
     "AI": {
         "ENABLED": True,
-        "THINK_DELAY_MS": {"min": 700, "max": 1600},
+        "THINK_DELAY_MS": {"min": 1500, "max": 2200},
         # AI 是否「看得到」下一發是什麼。true 會讓 AI 很強，但示範效果好。
         "KNOWS_NEXT_SHELL": True,
     },

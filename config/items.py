@@ -146,7 +146,7 @@ ITEMS: list[dict[str, Any]] = [
     {
         "id": "VISION", "name": "預言鏡", "icon": "👁️",
         "desc": "預知下一輪前 {COUNT} 發子彈的順序（僅你自己看得到）。",
-        "effect": "memory", "params": {"COUNT": 2}, "keeps_turn": True,
+        "effect": "memory", "params": {"COUNT": 4}, "keeps_turn": True,
     },
 
     # ── 機率寫在道具自己的 params 裡：改這裡的 CHANCE 就改這件道具的命中率 ──
@@ -160,6 +160,13 @@ ITEMS: list[dict[str, Any]] = [
         "id": "LUCKY_CIG", "name": "幸運菸", "icon": "🍀",
         "desc": "{CHANCE}% 機率回復 {HP} 點生命。",
         "effect": "heal", "params": {"CHANCE": "20", "HP": 5},
+        "keeps_turn": True,
+    },
+    {
+        "id": "OMEGA_MIX", "name": "終局混合物", "icon": "☠️",
+        "desc": "依序回血、提升血量上限、預知 4 發、鋸短槍管、啟動釘槍、手銬、抽取道具並造成傷害。",
+        "effect": "heal_max_hp_up_peek_cut_barrel_nail_gun_skip_next_gacha_deal_damage",
+        "params": {"HP": 1, "MAX_HP": 1, "COUNT": 4, "DAMAGE": 2, "SHOTS": 1, "SKIPS": 1},
         "keeps_turn": True,
     },
 ]
@@ -178,6 +185,7 @@ LOOT: dict[str, Any] = {
             "HANDSAW": 7, "MANGLER": 6, "BEER": 9, "BEER2": 5,
             "HANDCUFFS": 7, "NAILGROUP": 5, "INVERTER": 7,
             "BUNCH": 9, "VISION": 7, "MOLOTOV": 6, "LUCKY_CIG": 6,
+            "OMEGA_MIX": 1,
         },
         "EXCLUDE": [],
     },

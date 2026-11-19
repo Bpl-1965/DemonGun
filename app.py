@@ -111,10 +111,11 @@ SEAT_LIMITS = [1, 2, 3, 4]
 MAX_HUMANS = int(RULES.get("MAX_PLAYERS", 4))
 AI_MAX_STEPS_PER_TURN = 8
 # AI 每個動作之間的間隔（秒）：放慢到 1.5~2.2 秒，讓動畫有時間播完
-AI_ACTION_INTERVAL_MIN = 1.5
-AI_ACTION_INTERVAL_MAX = 2.2
+AI_ACTION_INTERVAL_MIN = float(RULES.get("AI", {}).get("THINK_DELAY_MS", {}).get("min", 1500)) / 1000.0
+AI_ACTION_INTERVAL_MAX = float(RULES.get("AI", {}).get("THINK_DELAY_MS", {}).get("max", 2200)) / 1000.0
 # 本輪打光後的緩衝（毫秒）：讓最後一發的受擊動畫與「誰射了誰」完整呈現
 ROUND_END_PAUSE_MS = 2200
+SHOT_REVEAL_PAUSE_MS = 650
 
 # ---------------------------------------------------------------------------
 #  房況資料
@@ -159,10 +160,12 @@ class Room:
     reveal_until: float = 0.0       # epoch 秒；前端用來畫進度條
     reveal_ms: int = 0
     generation: int = 0             # 每次開新局 +1，讓舊的計時器自動失效
+    ai_epoch: int = 0                # 狀態改變時遞增，使舊 AI 背景迴圈失效
     empty_since: float = 0.0        # 最後一個人離線的時間（0 = 有人）
     # 本輪打光後的緩衝：到期時間（epoch 秒）；0 = 沒有緩衝。
     # 期間前端把動作按鈕鎖住，等最後一發的動畫播完。
     round_pause_until: float = 0.0
+    action_pause_until: float = 0.0
     lock: threading.RLock = field(default_factory=threading.RLock)
 
     # --- 座位查詢 ---------------------------------------------------------
@@ -193,6 +196,14 @@ class Room:
 
     def in_game(self) -> bool:
         return self.game is not None and self.game.phase == "playing"
+
+    def is_reveal_locked(self) -> bool:
+        game = self.game
+        return bool(
+            game
+            and game.phase == "playing"
+            and (game.reveal_remaining_ms() > 0 or self.reveal_until > time.time())
+        )
 
     # --- 人數上限 ---------------------------------------------------------
     @property
@@ -346,6 +357,43 @@ def round_pause_active(room: Room) -> bool:
     return room.round_pause_until > time.time()
 
 
+def action_pause_active(room: Room) -> bool:
+    return room.action_pause_until > time.time()
+
+
+def advance_ai_epoch(room: Room, actions: list[dict[str, Any]] | None = None) -> None:
+    """Invalidate sleeping AI workers for every accepted action and turn boundary."""
+    room.ai_epoch += 1
+    boundary_types = {"TURN_CHANGED", "SKIP_TURN", "ROUND_END", "RELOAD"}
+    room.ai_epoch += sum(
+        1 for action in (actions or [])
+        if isinstance(action, dict) and action.get("type") in boundary_types
+    )
+
+
+def arm_shot_pause(room: Room) -> float:
+    room.action_pause_until = time.time() + SHOT_REVEAL_PAUSE_MS / 1000.0
+    return room.action_pause_until
+
+
+def release_shot_pause(room: Room, game: Game, deadline: float, *, schedule: bool) -> None:
+    generation = room.generation
+
+    def worker() -> None:
+        socketio.sleep(max(0.0, deadline - time.time()))
+        with room.lock:
+            if room.generation != generation or room.game is not game:
+                return
+            if room.action_pause_until != deadline:
+                return
+            room.action_pause_until = 0.0
+        emit_state(room)
+        if schedule and not round_pause_active(room):
+            schedule_after_broadcast(room)
+
+    socketio.start_background_task(worker)
+
+
 def broadcast_actions(room: Room, actions: list[dict[str, Any]] | None) -> None:
     """把引擎產生的動作串送給房裡所有人（已過濾機密欄位）。"""
     if not actions:
@@ -409,6 +457,7 @@ def emit_state(room: Room) -> None:
                 "revealMs": room.reveal_ms,
                 # 本輪緩衝：>0 表示「最後一發播動畫中」，前端據此鎖住按鈕
                 "roundPauseUntil": int(room.round_pause_until * 1000) if room.round_pause_until else 0,
+                "actionPauseUntil": int(room.action_pause_until * 1000) if room.action_pause_until else 0,
                 "serverNow": now_ms(),
                 "turnDeadline": int(room.turn_deadline * 1000) if room.turn_deadline else 0,
             },
@@ -449,6 +498,7 @@ def clear_timers(room: Room) -> None:
     room.turn_deadline = 0.0
     room.reveal_until = 0.0
     room.reveal_ms = 0
+    room.action_pause_until = 0.0
 
 
 def arm_reveal_timer(room: Room) -> bool:
@@ -524,58 +574,123 @@ def arm_turn_timer(room: Room) -> None:
             if game.phase != "playing" or game.active_id != active_id or game.version != version:
                 return
             result = game.execute(active_id, "TIMEOUT", {"target_id": None})
+            if result.get("ok"):
+                advance_ai_epoch(room, result.get("actions"))
+                shot_deadline = (
+                    arm_shot_pause(room)
+                    if any(a.get("type") == "SHOT" for a in result.get("actions", []))
+                    else 0.0
+                )
         if result.get("ok"):
             room.turn_deadline = 0.0
             if not broadcast_with_round_end_pause(room, result.get("actions")):
                 broadcast_actions(room, result.get("actions"))
                 emit_state(room)
+            if shot_deadline:
+                release_shot_pause(
+                    room,
+                    game,
+                    shot_deadline,
+                    schedule=not any(a.get("type") == "ROUND_END" for a in result.get("actions", [])),
+                )
+            elif not any(a.get("type") == "ROUND_END" for a in result.get("actions", [])):
                 schedule_after_broadcast(room, result.get("actions"))
 
     socketio.start_background_task(worker)
 
 
-def run_ai_loop(room: Room) -> None:
-    """AI 回合：一步一步問引擎，直到回合交還給人類或遊戲結束。"""
-    game = room.game
-    if game is None:
-        return
-    generation = room.generation
+def schedule_ai_loop(room: Room) -> None:
+    with room.lock:
+        if room.game is None or room.game.phase != "playing":
+            return
+        generation = room.generation
+        ai_epoch = room.ai_epoch
+    socketio.start_background_task(run_ai_loop, room, generation, ai_epoch)
 
-    for _ in range(AI_MAX_STEPS_PER_TURN):
-        if room.generation != generation or room.game is not game:
+
+def run_ai_loop(
+    room: Room, expected_generation: int | None = None, expected_epoch: int | None = None
+) -> None:
+    """AI 回合：一步一步問引擎，直到回合交還給人類或遊戲結束。"""
+    with room.lock:
+        game = room.game
+        if game is None:
             return
-        if game.phase != "playing":
+        generation = room.generation if expected_generation is None else expected_generation
+        my_epoch = room.ai_epoch if expected_epoch is None else expected_epoch
+        if room.generation != generation or room.ai_epoch != my_epoch:
             return
-        active = game.active_player()
-        if active is None or not active.is_ai:
-            return
+
+    for step_index in range(AI_MAX_STEPS_PER_TURN):
+        with room.lock:
+            active = game.active_player()
+            if (
+                room.generation != generation
+                or room.game is not game
+                or room.ai_epoch != my_epoch
+                or game.phase != "playing"
+                or room.is_reveal_locked()
+                or round_pause_active(room)
+                or active is None
+                or not active.is_ai
+                or active.dead
+            ):
+                return
 
         # 每個動作之間固定等 1.5~2.2 秒，讓前一個動作的動畫播完再進行下一步，
         # 避免多個動作疊在一起造成畫面卡頓。
         socketio.sleep(AI_ACTION_INTERVAL_MIN + random.random() * (AI_ACTION_INTERVAL_MAX - AI_ACTION_INTERVAL_MIN))
         with room.lock:
-            if room.game is not game or game.phase != "playing":
+            if (
+                room.generation != generation
+                or room.game is not game
+                or room.ai_epoch != my_epoch
+                or game.phase != "playing"
+                or room.is_reveal_locked()
+                or round_pause_active(room)
+                or action_pause_active(room)
+            ):
                 return
             current = game.active_player()
-            if current is None or not current.is_ai:
+            if current is None or current.dead or not current.is_ai:
                 return
             intent = choose_ai_intent(game)
             result = game.execute(current.id, intent.get("type"), intent.get("payload") or {})
-
-        if not result.get("ok"):
-            # AI 想做的事不合法（例如道具被換掉）→ 改成對玩家開槍，絕不卡住
-            fallback_targets = [s.id for s in room.humans() if not _is_dead(game, s.id)]
-            payload = {"target_id": fallback_targets[0] if fallback_targets else None}
-            with room.lock:
+            if not result.get("ok"):
+                fallback_targets = [s.id for s in room.humans() if not _is_dead(game, s.id)]
+                payload = {"target_id": fallback_targets[0] if fallback_targets else None}
                 result = game.execute(current.id, "SHOOT", payload)
             if not result.get("ok"):
                 return
+            advance_ai_epoch(room, result.get("actions"))
+            my_epoch = room.ai_epoch
+            shot_deadline = (
+                arm_shot_pause(room)
+                if any(a.get("type") == "SHOT" for a in result.get("actions", []))
+                else 0.0
+            )
 
         # 若這一步把本輪打光，會切成兩段廣播並緩衝 2.2 秒，AI 迴圈停在這裡
         if broadcast_with_round_end_pause(room, result.get("actions")):
+            if shot_deadline:
+                release_shot_pause(room, game, shot_deadline, schedule=False)
             return
         broadcast_actions(room, result.get("actions"))
         emit_state(room)
+        if shot_deadline:
+            next_player = game.active_player()
+            release_shot_pause(
+                room,
+                game,
+                shot_deadline,
+                schedule=bool(
+                    next_player is None
+                    or not next_player.is_ai
+                    or step_index == AI_MAX_STEPS_PER_TURN - 1
+                ),
+            )
+        elif game.phase != "playing" or not game.is_ai_turn():
+            schedule_after_broadcast(room)
 
     schedule_after_broadcast(room)
 
@@ -679,6 +794,9 @@ def schedule_after_broadcast(room: Room, actions: list[dict[str, Any]] | None = 
         clear_timers(room)
         return
 
+    if action_pause_active(room) or round_pause_active(room):
+        return
+
     if game.phase == "gameover":
         clear_timers(room)
         chamber = game.reveal_chamber() or []
@@ -704,7 +822,7 @@ def schedule_after_broadcast(room: Room, actions: list[dict[str, Any]] | None = 
     active = game.active_player()
     if active is not None and active.is_ai:
         room.turn_deadline = 0.0
-        socketio.start_background_task(run_ai_loop, room)
+        schedule_ai_loop(room)
         return
 
     arm_turn_timer(room)
@@ -1050,7 +1168,9 @@ def start_game(room: Room, by_seat: Seat | None) -> dict[str, Any]:
         if len(room.seats) < 2:
             return {"ok": False, "error": "NOT_ENOUGH_PLAYERS"}
         room.generation += 1
+        room.ai_epoch += 1
         clear_timers(room)
+        room.round_pause_until = 0.0
         seats = [
             {"id": s.id, "name": s.name, "is_ai": s.is_ai}
             for s in room.seats
@@ -1142,6 +1262,8 @@ def on_shoot(data=None):
     # ── 本輪打光後的緩衝期間一律擋掉（讓最後一發的動畫播完） ──
     if round_pause_active(room):
         return {"ok": False, "error": "ROUND_PAUSE"}
+    if action_pause_active(room):
+        return {"ok": False, "error": "ACTION_PAUSE"}
 
     # ── 防作弊 2：0.5 秒內的第二發直接忽略（只檢查，成功後才蓋章） ──
     if is_duplicate(seat, "SHOOT"):
@@ -1151,9 +1273,19 @@ def on_shoot(data=None):
     target_id = validate_target(game, payload_in.get("targetId", payload_in.get("target_id")))
 
     with room.lock:
+        if round_pause_active(room):
+            return {"ok": False, "error": "ROUND_PAUSE"}
+        if action_pause_active(room):
+            return {"ok": False, "error": "ACTION_PAUSE"}
         result = game.execute(seat.id, "SHOOT", {"target_id": target_id})
         if result.get("ok"):
             stamp_action(seat, "SHOOT")
+            advance_ai_epoch(room, result.get("actions"))
+            shot_deadline = (
+                arm_shot_pause(room)
+                if any(a.get("type") == "SHOT" for a in result.get("actions", []))
+                else 0.0
+            )
 
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error", "UNKNOWN")}
@@ -1163,6 +1295,14 @@ def on_shoot(data=None):
     if not broadcast_with_round_end_pause(room, result.get("actions")):
         broadcast_actions(room, result.get("actions"))
         emit_state(room)
+    if shot_deadline:
+        release_shot_pause(
+            room,
+            game,
+            shot_deadline,
+            schedule=not any(a.get("type") == "ROUND_END" for a in result.get("actions", [])),
+        )
+    elif not any(a.get("type") == "ROUND_END" for a in result.get("actions", [])):
         schedule_after_broadcast(room, result.get("actions"))
     return {"ok": True}
 
@@ -1185,6 +1325,8 @@ def on_use_item(data=None):
 
     if round_pause_active(room):
         return {"ok": False, "error": "ROUND_PAUSE"}
+    if action_pause_active(room):
+        return {"ok": False, "error": "ACTION_PAUSE"}
 
     if is_duplicate(seat, "USE_ITEM"):
         return {"ok": False, "error": "TOO_FAST"}
@@ -1202,9 +1344,19 @@ def on_use_item(data=None):
         payload["target_id"] = target_id
 
     with room.lock:
+        if round_pause_active(room):
+            return {"ok": False, "error": "ROUND_PAUSE"}
+        if action_pause_active(room):
+            return {"ok": False, "error": "ACTION_PAUSE"}
         result = game.execute(seat.id, "USE_ITEM", payload)
         if result.get("ok"):
             stamp_action(seat, "USE_ITEM")
+            advance_ai_epoch(room, result.get("actions"))
+            shot_deadline = (
+                arm_shot_pause(room)
+                if any(a.get("type") == "SHOT" for a in result.get("actions", []))
+                else 0.0
+            )
 
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error", "UNKNOWN")}
@@ -1214,6 +1366,14 @@ def on_use_item(data=None):
     if not broadcast_with_round_end_pause(room, result.get("actions")):
         broadcast_actions(room, result.get("actions"))
         emit_state(room)
+    if shot_deadline:
+        release_shot_pause(
+            room,
+            game,
+            shot_deadline,
+            schedule=not any(a.get("type") == "ROUND_END" for a in result.get("actions", [])),
+        )
+    elif not any(a.get("type") == "ROUND_END" for a in result.get("actions", [])):
         schedule_after_broadcast(room, result.get("actions"))
     return {"ok": True}
 

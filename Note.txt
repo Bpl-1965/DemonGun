@@ -282,3 +282,13 @@ Senior Software Developer.
 - 驗證：手銬實測 skips 0→1→0、動作串 [SHOT, SKIP_TURN, TURN_CHANGED]、回合正確跳過；
   ui_smoke 新增 10 項退彈／手銬測試；check_frontend 68 個 id ✅、ui_smoke 54/0 ✅、
   fx_smoke 28/0 ✅；並用 CDP 截圖確認退彈提示與鎖鏈徽章外觀。
+- 暗黑賭桌與回合節奏升級：
+  - 保留既有 index.html 結構與全部 DOM ID；CSS 明確強制 [hidden]、100dvh/safe-area、
+    手機 4×2 道具格與至少 48px 開槍按鈕，互動過渡只使用 transform / opacity。
+  - 霰彈槽逐顆亮起並滑入槍膛；fx.js 保持單一 MutationObserver，射擊特效等揭曉後才播放。
+  - 道具改成第一次選取預覽、第二次使用；非玩家回合、裝填揭曉與輪末緩衝會清除選取並禁用。
+  - 射擊揭曉鎖 650ms、AI 動作間隔 1.5–2.2 秒、輪末緩衝 2.2 秒；ai_epoch 與排程世代驗證阻止過期 AI 偷射。
+  - 修正手銬跨換彈保留、實際跳過才扣次數；底線效果可串接，新增 OMEGA_MIX、VISION 四發預覽與不限同回合道具數。
+  - 最終驗證：check_frontend 68 IDs / 45 client IDs、ui_smoke 58/0、fx_smoke 29/0、
+    validate_items/validate_loot 0 問題、Python compileall 通過；OMEGA 串接、私有四發預言、
+    手銬跨裝填與新局重置測試通過。

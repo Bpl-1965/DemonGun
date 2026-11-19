@@ -43,7 +43,6 @@
   let muzzleTimer = null;
   let reloadTimer = null;
   let ammoTimer = null;
-  let awaitTimer = null;
   let revealRetry = null;
   // 防重入鎖：避免換輪時 observer 與 renderRevealShells 同時觸發同一段動畫
   let spinLock = false;
@@ -263,7 +262,7 @@
     // order[k] = 第 k 個進膛的「彈藥架位置」
     const fireDelayOf = {};
     const FIRE_START = 1400;
-    const FIRE_SPAN = 1400;
+    const FIRE_SPAN = 900;
     const step = total > 0 ? Math.max(60, FIRE_SPAN / total) : 0;
     order.forEach((slotIndex, k) => {
       fireDelayOf[slotIndex] = Math.round(FIRE_START + k * step);
@@ -334,7 +333,8 @@
     // 動畫結束用 animationend 收尾（比計時器可靠：分頁切到背景也不會卡住狀態），
     // 計時器只當作保險。finish 可能被兩邊各叫一次，用 done 旗標避免重複。
     let done = false;
-    const finish = () => {
+    const finish = (event) => {
+      if (event && event.animationName && event.animationName !== "rackClose") return;
       if (done) return;
       done = true;
       if (card) card.classList.remove("is-closing");
@@ -418,34 +418,15 @@
       (window.requestAnimationFrame || setTimeout)(flush);
     };
 
-    const watch = (id) => {
-      const node = $(id);
-      if (!node) return;
-      new MutationObserver(() => queue(id)).observe(node, {
-        childList: true,
-        subtree: true,
-        characterData: true,
-      });
-    };
-
-    watch("myHearts");
-    // ⚠ 不要 watch("revealShells")：fx.js 自己會寫它的 innerHTML，
-    // 監聽它等於自我觸發（每寫一次就再排一次重畫），是卡頓的主要來源之一。
-    // revealLive / revealBlank 由 client.js 改 textContent，監聽這兩個就夠了
-    ["revealLive", "revealBlank"].forEach((id) => {
-      const node = $(id);
-      if (!node) return;
-      new MutationObserver(() => queue("revealShells")).observe(node, {
-        childList: true,
-        characterData: true,
-        subtree: true,
-      });
-    });
-
-    // 對手血量：.hearts[data-hearts] 是 client.js 動態生成的，用一次委派監聽整個對手區
     const foes = $("opponents");
-    if (foes) {
-      new MutationObserver(() => {
+    const me = $("myHearts");
+    const revealLive = $("revealLive");
+    const revealBlank = $("revealBlank");
+    const reveal = $("reveal");
+    const watched = [me, revealLive, revealBlank, foes, reveal].filter(Boolean);
+
+    const scanFoeHearts = () => {
+      if (foes) {
         foes.querySelectorAll("[data-hearts]").forEach((node) => {
           const id = node.getAttribute("data-hearts");
           const hp = countHearts(node);
@@ -454,19 +435,50 @@
           lastHp.set(id, hp);
           if (prev !== undefined && hp < prev) hit(prev - hp, id);
         });
-      }).observe(foes, { childList: true, subtree: true });
-    }
+      }
+    };
 
-    // 裝填提示框一出現就轉一次彈巢（開局 / 換輪），並補畫彈藥架
-    const reveal = $("reveal");
-    if (reveal) {
-      new MutationObserver(() => {
-        if (!reveal.hidden) {
-          queue("revealShells");
-          spinCylinder();
-        }
-      }).observe(reveal, { attributes: true, attributeFilter: ["hidden"] });
-    }
+    const observer = new MutationObserver((records) => {
+      if (!records || !records.length) {
+        watchHearts();
+        renderRevealShells();
+        scanFoeHearts();
+        if (reveal && !reveal.hidden) spinCylinder();
+        return;
+      }
+
+      const within = (root, target) =>
+        root === target || Boolean(root && typeof root.contains === "function" && root.contains(target));
+      if (records.some((record) => within(me, record.target))) watchHearts();
+      if (
+        records.some((record) =>
+          within(revealLive, record.target) ||
+          within(revealBlank, record.target) ||
+          (record.target === reveal && record.attributeName === "hidden")
+        )
+      ) {
+        queue("revealShells");
+      }
+      if (records.some((record) => within(foes, record.target))) scanFoeHearts();
+      if (
+        reveal &&
+        !reveal.hidden &&
+        records.some((record) => record.target === reveal && record.attributeName === "hidden")
+      ) {
+        spinCylinder();
+      }
+    });
+
+    watched.forEach((node) => {
+      const isReveal = node === reveal;
+      observer.observe(node, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: isReveal,
+        attributeFilter: isReveal ? ["hidden"] : undefined,
+      });
+    });
   }
 
   // ------------------------------------------------------------------ 板機按壓
@@ -485,34 +497,6 @@
       node.addEventListener("pointerleave", () => node.classList.remove("is-armed"));
     });
 
-    // 對自己開槍：先「屏息等待」一下再擊發（震動 + 火光）。
-    // 這裡只用 setTimeout 做視覺演出，不攔截 click、不改任何狀態。
-    const self = $("btnSelf");
-    if (self) {
-      self.addEventListener("click", () => {
-        if (self.disabled || reduceMotion()) return;
-        const body = document.body;
-        body.classList.remove("is-awaiting");
-        void body.offsetWidth;
-        body.classList.add("is-awaiting");
-        clearTimeout(awaitTimer);
-        awaitTimer = setTimeout(() => {
-          body.classList.remove("is-awaiting");
-          bodyShake();
-          muzzleFlash();
-        }, 620);
-      });
-    }
-
-    // 對敵人開槍：直接後座（震動 + 火光）
-    const enemy = $("btnEnemy");
-    if (enemy) {
-      enemy.addEventListener("click", () => {
-        if (enemy.disabled || reduceMotion()) return;
-        bodyShake();
-        muzzleFlash();
-      });
-    }
   }
 
   function boot() {

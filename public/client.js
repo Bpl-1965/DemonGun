@@ -22,6 +22,7 @@
     GAME_NOT_PLAYING: "遊戲還沒開始或已經結束。",
     PLAYER_DEAD: "你已經出局了。",
     TOO_FAST: "手速太快了，慢一點。",
+    ACTION_PAUSE: "開槍中，等結果揭曉。",
     UNKNOWN_ITEM: "沒有這個道具。",
     NO_ITEM: "道具已經用掉了。",
     TOO_MANY_ITEMS: "這回合用太多道具了。",
@@ -56,6 +57,9 @@
     revealTimer: null,
     // 本輪打光後的緩衝（伺服器時間軸 ms）：期間按鈕鎖住，讓最後一發的動畫播完
     roundPauseUntil: 0,
+    actionPauseUntil: 0,
+    actionPauseTimer: null,
+    actionPauseTimerDeadline: 0,
     // 道具兩段式操作：第一次點擊只選中並顯示說明，第二次才真的使用
     armedItem: null,
     armedItemAt: 0,
@@ -110,6 +114,7 @@
   const revealActive = () => state.revealUntil > Date.now() + state.serverOffset;
   // 本輪打光後的緩衝（伺服器會在這段時間鎖住按鈕，讓最後一發的動畫播完）
   const roundPauseActive = () => state.roundPauseUntil > Date.now() + state.serverOffset;
+  const actionPauseActive = () => state.actionPauseUntil > Date.now() + state.serverOffset;
 
   // ---------------------------------------------------------------- 畫面切換
   function setMessage(text, kind) {
@@ -454,6 +459,7 @@
     show(event, item, wasted) {
       const box = this.el();
       if (!box) return;
+      const chance = itemChance(item);
       box.innerHTML =
         '<span class="item-tooltip__name">' +
         (item.icon ? item.icon + " " : "") +
@@ -461,6 +467,9 @@
         '</span><span class="item-tooltip__desc">' +
         esc(item.desc || "") +
         "</span>" +
+        (chance === null
+          ? ""
+          : '<span class="item-tooltip__meta">成功率 ' + formatChance(chance) + "%</span>") +
         (wasted ? '<span class="item-tooltip__meta">生命值已滿，現在用會浪費</span>' : "");
       box.hidden = false;
       this.move(event);
@@ -506,6 +515,7 @@
   function armItem(item, wasted) {
     state.armedItem = item ? item.id : null;
     state.armedItemAt = Date.now();
+    tooltip.hide();
     const grid = $("itemsGrid");
     if (grid) {
       Array.prototype.forEach.call(grid.querySelectorAll(".slot"), (node) => {
@@ -531,49 +541,49 @@
       });
     }
     closeItemCard();
+    tooltip.hide();
+  }
+
+  function itemChance(item) {
+    const catalog = (state.config && state.config.ITEMS) || [];
+    const definition = catalog.find((entry) => entry.id === item.id);
+    const raw = (item.params || (definition && definition.params) || {}).CHANCE;
+    if (typeof raw === "undefined") return null;
+    let pct;
+    if (typeof raw === "string" && raw.indexOf("/") !== -1) {
+      const parts = raw.split("/", 2).map(Number);
+      pct = parts[1] ? (parts[0] / parts[1]) * 100 : 0;
+    } else {
+      const value = Number(raw);
+      if (!Number.isFinite(value)) return 100;
+      pct = value <= 1 ? value * 100 : value;
+    }
+    return Math.max(0, Math.min(100, Number(pct.toFixed(1))));
+  }
+
+  function formatChance(chance) {
+    return Number.isInteger(chance) ? String(chance) : chance.toFixed(1);
   }
 
   /** 固定在道具欄上方（手機）或賭桌中央的說明卡 */
   function openItemCard(item, wasted) {
     const card = $("itemCard");
     if (!card) return;
-    const effect = itemEffect(item.id);
-    const chance = item.params && item.params.CHANCE;
-    let chanceText = "";
-    if (typeof chance !== "undefined") {
-      let pct = Number(chance);
-      if (isNaN(pct)) pct = 100;
-      else if (pct <= 1) pct = pct * 100;
-      chanceText = '<span class="item-card__chance">成功率 ' + Math.round(pct) + "%</span>";
-    }
+    const chance = itemChance(item);
+    const chanceText = chance === null
+      ? ""
+      : '<span class="item-card__chance">成功率 ' + formatChance(chance) + "%</span>";
     card.innerHTML =
       '<div class="item-card__head">' +
       '<span class="item-card__icon">' + esc(item.icon || "❓") + "</span>" +
       '<span class="item-card__name">' + esc(item.name) + "</span>" +
       chanceText +
       "</div>" +
-      '<p class="item-card__desc">' + esc(item.desc || "") + "</p>" +
+      '<p class="item-card__desc">效果：' + esc(item.desc || "") + "</p>" +
       (wasted ? '<p class="item-card__warn">生命值已滿，現在用會浪費</p>' : "") +
-      '<button type="button" class="item-card__use" data-use="' + esc(item.id) + '">使用</button>' +
       '<p class="item-card__hint">再點一次道具即可使用</p>';
     card.hidden = false;
     card.classList.add("is-open");
-
-    const useBtn = card.querySelector(".item-card__use");
-    if (useBtn) {
-      useBtn.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (useBtn.disabled) return;
-        // 說明卡可能停留在畫面上，按下去時再確認一次輪次與裝填鎖
-        if (!isMyTurn() || revealActive()) {
-          disarmItem();
-          return;
-        }
-        const id = item.id;
-        disarmItem();
-        useItem(id);
-      });
-    }
   }
 
   function closeItemCard() {
@@ -601,7 +611,7 @@
     const rawMax =
       state.config && state.config.LIMITS && typeof state.config.LIMITS.MAX_ITEMS_PER_TURN === "number"
         ? state.config.LIMITS.MAX_ITEMS_PER_TURN
-        : 3;
+        : 0;
     const maxPerTurn = Number(rawMax);
     const usedThisTurn = Number((priv() && priv().itemsThisTurn) || 0);
     const revealLocked = revealActive();
@@ -610,7 +620,8 @@
     // maxPerTurn <= 0 → 不限次數
     const itemBudgetLeft = maxPerTurn <= 0 || usedThisTurn < maxPerTurn;
     const canUse =
-      Boolean(p) && p.phase === "playing" && !revealLocked && !roundPauseActive() && myTurnNow && alive && itemBudgetLeft;
+      Boolean(p) && p.phase === "playing" && !revealLocked && !roundPauseActive() &&
+      !actionPauseActive() && !state.busy && myTurnNow && alive && itemBudgetLeft;
     const hpFull = Boolean(alive && me.hp >= me.maxHp);
 
     // ── 跨回合清除：只要不是我的回合 / 正在裝填 / 道具已消失，就取消鎖定 ──
@@ -628,6 +639,9 @@
       (hpFull ? 1 : 0) +
       "#" + (myTurnNow ? 1 : 0) +
       (revealLocked ? 1 : 0) +
+      (roundPauseActive() ? 1 : 0) +
+      (actionPauseActive() ? 1 : 0) +
+      (state.busy ? 1 : 0) +
       usedThisTurn;
     if (grid.dataset.sig === sig) return;
     grid.dataset.sig = sig;
@@ -658,7 +672,7 @@
       btn.addEventListener("click", (event) => {
         event.stopPropagation();
         if (btn.disabled) return;
-        if (!isMyTurn() || revealActive()) {
+        if (!isMyTurn() || revealActive() || roundPauseActive() || actionPauseActive()) {
           disarmItem();
           return;
         }
@@ -702,7 +716,7 @@
     }
 
     // revealActive() / roundPauseActive() 都會自動換算伺服器時間
-    const isLocked = revealActive() || roundPauseActive();
+    const isLocked = revealActive() || roundPauseActive() || actionPauseActive();
     const canAct =
       Boolean(p) && p.phase === "playing" && p.activeId === state.youId && !isLocked && !state.busy;
 
@@ -742,6 +756,30 @@
   }
 
   function renderAll() {
+    if (actionPauseActive()) {
+      disarmItem();
+      $("btnSelf").disabled = true;
+      $("btnEnemy").disabled = true;
+      const grid = $("itemsGrid");
+      if (grid && typeof grid.querySelectorAll === "function") {
+        Array.prototype.forEach.call(grid.querySelectorAll(".slot"), (slot) => {
+          slot.disabled = true;
+        });
+      }
+      if (state.actionPauseTimerDeadline !== state.actionPauseUntil) {
+        clearTimeout(state.actionPauseTimer);
+        state.actionPauseTimerDeadline = state.actionPauseUntil;
+        state.actionPauseTimer = setTimeout(() => {
+          state.actionPauseTimer = null;
+          if (!actionPauseActive()) state.actionPauseUntil = 0;
+          renderAll();
+        }, Math.max(0, state.actionPauseUntil - (Date.now() + state.serverOffset)) + 20);
+      }
+      return;
+    }
+    clearTimeout(state.actionPauseTimer);
+    state.actionPauseTimer = null;
+    state.actionPauseTimerDeadline = 0;
     renderHud();
     renderFoes();
     renderSelf();
@@ -754,11 +792,22 @@
   // ---------------------------------------------------------------- 動作演出
   function flashGun(kind) {
     const gun = $("gun");
-    gun.classList.remove("is-aiming", "is-live", "is-blank", "is-recoil");
+    gun.classList.remove("is-aiming", "is-winding", "is-live", "is-blank", "is-recoil");
     void gun.offsetWidth;
     gun.classList.add("is-aiming");
     if (kind === "live") gun.classList.add("is-live");
     if (kind === "blank") gun.classList.add("is-blank");
+  }
+
+  function windupGun(action) {
+    const gun = $("gun");
+    if (!gun) return;
+    gun.classList.remove("is-aiming", "is-winding", "is-live", "is-blank", "is-recoil");
+    gun.classList.add("is-winding");
+    gun.dataset.aimTarget = action.targetId || "";
+    document.body.classList.remove("is-awaiting");
+    void document.body.offsetWidth;
+    document.body.classList.add("is-awaiting");
   }
 
   function recoil() {
@@ -802,7 +851,7 @@
       '<span class="eject-toast__shell eject-toast__shell--' + kind + '">' +
       '<i class="eject-toast__cap"></i><i class="eject-toast__body"></i><i class="eject-toast__rim"></i>' +
       "</span>" +
-      '<span class="eject-toast__text">🍺 退出了 1 發【' + label + "】" + count + "</span>";
+      '<span class="eject-toast__text">🍺 退出了 ' + shells.length + " 發【" + label + "】" + count + "</span>";
     node.hidden = false;
     node.classList.remove("is-showing");
     void node.offsetWidth;
@@ -885,6 +934,10 @@
         showSkipTurn(action);
         break;
       case "SHOT": {
+        document.body.classList.remove("is-awaiting");
+        const report = (action.shooterName || "有人") + " 對 " +
+          (action.targetName || "目標") + " 開槍（" + (action.realShell ? "實彈" : "空包彈") + "）";
+        $("hint").textContent = report;
         flashGun(action.realShell ? "live" : "blank");
         recoil();
         if (action.realShell) shakeScreen();
@@ -912,6 +965,10 @@
     // 串行播放，避免多個動作的動畫互相打斷
     state.queue = state.queue.then(async () => {
       for (const action of actions || []) {
+        if (action.type === "SHOT") {
+          windupGun(action);
+          await sleep(650);
+        }
         applyAction(action);
         if (action.type === "SHOT" || action.type === "TAUNT") await sleep(420);
       }
@@ -947,7 +1004,7 @@
   function useItem(itemId) {
     if (!state.socket || state.busy) return;
     // 最後一道防線：不是我的回合、裝填中、或本輪緩衝期間就不送（後端同樣會擋）
-    if (!isMyTurn() || revealActive() || roundPauseActive()) {
+    if (!isMyTurn() || revealActive() || roundPauseActive() || actionPauseActive()) {
       disarmItem();
       return;
     }
@@ -1064,9 +1121,7 @@
       state.seats = payload.seats || [];
       // 伺服器每次都會帶最新道具表：中途加入或伺服器改過道具時，說明文字不會過期
       if (Array.isArray(payload.items) && state.config) {
-        if (!state.config.ITEMS || state.config.ITEMS.length !== payload.items.length) {
-          state.config = Object.assign({}, state.config, { ITEMS: payload.items });
-        }
+        state.config = Object.assign({}, state.config, { ITEMS: payload.items });
       }
       // 伺服器說「沒有進行中的遊戲」就真的清掉，免得重開房後還畫著上一局的殘影
       state.game = payload.game || { public: null, private: null };
@@ -1077,6 +1132,7 @@
       state.revealUntil = payload.revealUntil || 0;
       state.revealMs = payload.revealMs || 0;
       state.roundPauseUntil = payload.roundPauseUntil || 0;
+      state.actionPauseUntil = payload.actionPauseUntil || 0;
       state.turnDeadline = payload.turnDeadline || 0;
       syncTurnTimer();
 
@@ -1123,6 +1179,14 @@
       if (!payload) return;
       state.busy = false;
       state.busyAt = 0;
+      if ((payload.actions || []).some((action) => action && action.type === "SHOT")) {
+        state.actionPauseUntil = Math.max(
+          state.actionPauseUntil,
+          Date.now() + state.serverOffset + 650
+        );
+        disarmItem();
+        renderAll();
+      }
       runActions(payload.actions);
     });
 

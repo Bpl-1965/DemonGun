@@ -46,17 +46,27 @@ class EffectTable:
             return None
         if name in _REGISTRY:
             return [_REGISTRY[name]]
-        # 依名稱長度由長到短貪婪拆解（避免 peek_and_hurt 被拆錯）
-        known = sorted(_REGISTRY.keys(), key=len, reverse=True)
-        chain: list[Handler] = []
-        pos = 0
-        while pos < len(name):
-            matched = next((k for k in known if name.startswith(k, pos) and (pos + len(k) == len(name) or name[pos + len(k)] == "_")), None)
-            if not matched:
-                return None
-            chain.append(_REGISTRY[matched])
-            pos += len(matched) + 1
-        return chain if chain else None
+        known = sorted(_REGISTRY, key=len, reverse=True)
+        resolved: dict[int, list[Handler] | None] = {}
+
+        def split_from(position: int) -> list[Handler] | None:
+            if position == len(name):
+                return []
+            if position in resolved:
+                return resolved[position]
+            for effect in known:
+                end = position + len(effect)
+                if name.startswith(effect, position) and (end == len(name) or name[end] == "_"):
+                    if end < len(name) and end + 1 == len(name):
+                        continue
+                    rest = split_from(end + 1) if end < len(name) else []
+                    if rest is not None:
+                        resolved[position] = [_REGISTRY[effect], *rest]
+                        return resolved[position]
+            resolved[position] = None
+            return None
+
+        return split_from(0)
 
     def get(self, name: Any) -> Handler | None:
         if not name:

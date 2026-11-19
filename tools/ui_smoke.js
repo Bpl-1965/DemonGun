@@ -48,11 +48,24 @@ function makeEl(tag) {
       child.parentElement = this;
       return child;
     },
+    querySelectorAll(selector) {
+      const hasClass = (child, name) =>
+        child.classList.contains(name) || String(child.className || "").split(/\s+/).includes(name);
+      if (selector === ".slot") {
+        return this.children.filter((child) => hasClass(child, "slot"));
+      }
+      if (selector === ".slot.is-armed") {
+        return this.children.filter(
+          (child) => hasClass(child, "slot") && hasClass(child, "is-armed")
+        );
+      }
+      return [];
+    },
     addEventListener(type, fn) {
       (this._listeners[type] = this._listeners[type] || []).push(fn);
     },
     click() {
-      (this._listeners.click || []).forEach((fn) => fn({}));
+      (this._listeners.click || []).forEach((fn) => fn({ stopPropagation() {} }));
     },
   };
   Object.defineProperty(el, "textContent", {
@@ -111,11 +124,13 @@ const document = {
 // ------------------------------------------------------------------ socket stub
 const handlers = {};
 const acks = {};
+const emissions = [];
 const socket = {
   on(type, fn) {
     (handlers[type] = handlers[type] || []).push(fn);
   },
   emit(type, payload, ack) {
+    emissions.push({ type, payload });
     acks[type] = ack;
   },
 };
@@ -235,6 +250,8 @@ function updateWith(players, activeId, youId, deadlineMs) {
 }
 
 const foes = () => document.getElementById("opponents");
+document.getElementById("itemCard").hidden = true;
+document.getElementById("itemTooltip").hidden = true;
 
 console.log("1) 單人局（1 個對手）");
 update([player("p1", "你", 4), player("ai1", "DeepSeek 娘", 3, { isAi: true })], "p1", "p1");
@@ -358,8 +375,8 @@ function itemSlots() {
   );
 }
 
-// 送一份帶指定 activeId / itemsThisTurn / revealUntil 的狀態並回傳道具格
-function sendState(activeId, itemsThisTurn, revealUntil) {
+// 送一份帶指定 activeId / itemsThisTurn / revealUntil / roundPauseUntil 的狀態並回傳道具格
+function sendState(activeId, itemsThisTurn, revealUntil, roundPauseUntil) {
   fire("room:update", {
     code: "ABCD",
     hostId: "p1",
@@ -379,6 +396,7 @@ function sendState(activeId, itemsThisTurn, revealUntil) {
       },
     },
     revealUntil: revealUntil || 0,
+    roundPauseUntil: roundPauseUntil || 0,
     revealMs: revealUntil ? 3000 : 0,
     serverNow: Date.now(),
     turnDeadline: Date.now() + 20000,
@@ -395,14 +413,29 @@ check("別人的回合 → 道具全部 disabled", its.length > 0 && its.every((
 its = sendState("p1", 0, 0);
 check("我的回合 → 道具可點", its.length > 0 && its.every((b) => b.disabled === false),
   its.map((b) => b.disabled));
+its[0].click();
+check("第一次點道具只鎖定並顯示說明", its[0].classList.contains("is-armed") && !document.getElementById("itemCard").hidden,
+  { armed: its[0].classList.contains("is-armed"), hidden: document.getElementById("itemCard").hidden, disabled: its[0].disabled });
+its = sendState("p2", 0, 0);
+check("換成別人的回合立即清除選中與說明", document.getElementById("itemCard").hidden &&
+  !its.some((b) => b.classList.contains("is-armed")));
+its = sendState("p1", 0, 0);
+its[0].click();
+its[0].click();
+check("再次點同一道具才送出 game:item", emissions.some((entry) => entry.type === "game:item"));
+if (acks["game:item"]) acks["game:item"]({ ok: true });
 
 // (c) 裝填鎖期間（revealUntil 在未來）→ 道具 disabled
 its = sendState("p1", 0, Date.now() + 3000);
 check("裝填鎖期間 → 道具 disabled", its.every((b) => b.disabled === true), its.map((b) => b.disabled));
 
-// (d) 本回合道具已用滿 → disabled
+// (d) 本輪結束緩衝期間 → 道具 disabled
+its = sendState("p1", 0, 0, Date.now() + 2200);
+check("每輪結束緩衝期間 → 道具 disabled", its.every((b) => b.disabled === true), its.map((b) => b.disabled));
+
+// (e) 次數上限為 0 時不限制同回合道具數
 its = sendState("p1", 99, 0);
-check("本回合已用滿 → 道具 disabled", its.every((b) => b.disabled === true), its.map((b) => b.disabled));
+check("不限次使用 → 已用多件道具仍可點", its.every((b) => b.disabled === false), its.map((b) => b.disabled));
 
 console.log("7) 🍺 啤酒退彈與 ⛓️ 手銬視覺");
 

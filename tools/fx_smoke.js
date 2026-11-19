@@ -142,7 +142,7 @@ try {
   threw = err;
 }
 check("fx.js 載入不丟錯", threw === null, threw && threw.message);
-check("註冊了 MutationObserver（有在觀察）", observers.length >= 4, observers.length);
+check("全站只建立一組 MutationObserver", observers.length === 1, observers.length);
 
 const flushRaf = () => { const q = rafQueue; rafQueue = []; q.forEach((fn) => fn()); };
 const myHearts = byId.get("myHearts");
@@ -248,6 +248,11 @@ setTimeout(() => {
   check("按下不會改寫 disabled（不干擾 client.js）", btn.disabled === undefined);
   btn.fire("pointerup", {});
   check("放開移除 is-armed", !btn.classList.contains("is-armed"));
+  document.body.classList.remove("is-shaking", "is-awaiting");
+  byId.get("fxMuzzle").classList.remove("is-fire");
+  btn.fire("click", {});
+  check("點擊開槍不會搶先播放揭曉特效", !document.body.classList.contains("is-shaking") &&
+    !document.body.classList.contains("is-awaiting") && !byId.get("fxMuzzle").classList.contains("is-fire"));
 
   // ------------------------------------------------------------ 缺元素不炸
   let threw2 = null;

@@ -54,7 +54,7 @@ PHASE_PLAYING = "playing"
 PHASE_OVER = "gameover"
 
 BASE_DAMAGE = 1
-MAX_ITEMS_PER_TURN = 3
+MAX_ITEMS_PER_TURN = 0
 LOG_LIMIT = 40
 
 # 這些道具的效果本身就代表「這一回合的動作結束了」，不額外再送一次 TURN_CHANGED
@@ -375,13 +375,12 @@ class Game:
         self._set_chamber(load["chamber"])
         self.pending_inverted = False
 
-        # 每輪重置的增益（原版：換彈時槍管長回去、手銬在這一輪開始前解除）
+        # 換彈時清除短效增益；手銬的跳過次數跨輪保留。
         for p in self.players:
             p.sawn_off = 0
             p.sawn_bonus = 1
             p.nails = 0
             p.intel = []
-            p.skips = 0
             p.items_this_turn = 0
             p.last_item_id = None
 
@@ -519,10 +518,8 @@ class Game:
         # 明確寫出「誰射了誰」：對自己就寫「自己」，不重複名字
         who = shooter.name
         whom = "自己" if target.id == shooter.id else target.name
-        if real:
-            self._log("shot", f"{who} 對 {whom} 開槍：實彈，{damage} 點傷害。")
-        else:
-            self._log("shot", f"{who} 對 {whom} 開槍：空包彈。")
+        shell_name = "實彈" if real else "空包彈"
+        self._log("shot", f"{who} 對 {whom} 開槍（{shell_name}）")
 
         return action
 
