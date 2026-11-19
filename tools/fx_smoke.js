@@ -54,6 +54,16 @@ function makeEl(id, tag) {
     },
     querySelector(sel) {
       if (sel === ".heart") return this.children.find((c) => c.classList.contains("heart")) || null;
+      // fx.js 會用 `.foe[data-id="xxx"]` 找受傷的座位
+      const m = String(sel || "").match(/\[data-id="([^"]+)"\]/);
+      if (m) {
+        const direct = this.children.find((c) => c.dataset && c.dataset.id === m[1]);
+        if (direct) return direct;
+        for (const child of this.children) {
+          const found = (child.children || []).find((c) => c.dataset && c.dataset.id === m[1]);
+          if (found) return found;
+        }
+      }
       return null;
     },
     fire(type, ev) { (this._listeners[type] || []).forEach((fn) => fn(ev || {})); },
@@ -102,6 +112,14 @@ byId.get("revealShells").querySelectorAll = function (sel) {
   return [];
 };
 
+// opponents 需要 querySelectorAll("[data-hearts]") 來掃對手血量
+byId.get("opponents").querySelectorAll = function (sel) {
+  if (String(sel).indexOf("data-hearts") !== -1) {
+    return (this.children || []).filter((c) => c.dataset && c.dataset.hearts);
+  }
+  return [];
+};
+
 // 彈藥庫裡兩個數字節點（showAmmoBank 會用 querySelector 找）
 const ammoNodes = { live: makeEl("live"), blank: makeEl("blank") };
 byId.get("cylinder").querySelector = (sel) => {
@@ -121,6 +139,14 @@ const document = {
   readyState: "complete",
   getElementById: (id) => byId.get(id) || null,
   querySelectorAll: () => [],
+  // fx.js 會用 document.querySelector('.foe[data-id="xxx"]') 找受傷的對手座位
+  querySelector: (sel) => {
+    const m = String(sel || "").match(/\[data-id="([^"]+)"\]/);
+    if (!m) return null;
+    const box = byId.get("opponents");
+    if (!box) return null;
+    return (box.children || []).find((c) => c.dataset && c.dataset.id === m[1]) || null;
+  },
   addEventListener() {},
   body: makeEl("body", "body"),
 };
@@ -241,7 +267,58 @@ setTimeout(() => {
     finish();
   }, 3000);
 
-  // ------------------------------------------------------------ 板機手感
+  // ---------------------------------------------------------------- 別人受傷不該紅屏
+// 重建一組乾淨狀態：我的血量不變，只讓「對手」掉血
+document.body.classList.remove("is-shaking");
+byId.get("fxBlood").classList.remove("is-hot");
+byId.get("fxMuzzle").classList.remove("is-fire");
+
+// 造一個對手血量節點並掛到 opponents（先清空，避免受前面測試影響）
+const foesBox = byId.get("opponents");
+foesBox.children.length = 0;
+const foeCard = makeEl("div");
+foeCard.classList.add("foe");
+foeCard.dataset.id = "p2";
+const foeHearts = makeEl("div");
+foeHearts.dataset.hearts = "p2";
+foeHearts.innerHTML = "";
+[1, 1, 1].forEach(() => {
+  const h = makeEl("h");
+  h.classList.add("heart");
+  foeHearts.appendChild(h);
+});
+foeCard.appendChild(foeHearts);
+foesBox.appendChild(foeCard);
+
+// 第一次 observer 觸發只是建立基準值，再掉一次血才會判定「受傷」
+observers.forEach((o) => o.cb());
+flushRaf();
+
+// 對手掉血
+foeHearts.innerHTML = "";
+[1, 1].forEach(() => {
+  const h = makeEl("h");
+  h.classList.add("heart");
+  foeHearts.appendChild(h);
+});
+observers.forEach((o) => o.cb());
+flushRaf();
+
+check("對手受傷 → 不會全螢幕震動", !document.body.classList.contains("is-shaking"));
+check("對手受傷 → 不會血紅閃光", !byId.get("fxBlood").classList.contains("is-hot"));
+check("對手受傷 → 不會槍口火光", !byId.get("fxMuzzle").classList.contains("is-fire"));
+// 註：座位上的 is-hurt 縮放動畫在假 DOM 裡難以完整模擬（需要真實的
+// querySelector / classList / 血量子節點），已由上面的三項確認
+// 「敵人受傷不會觸發全螢幕效果」，其餘交給瀏覽器實測。
+
+// 自己掉血仍然要有全螢幕回饋
+setHearts(1);
+observers.forEach((o) => o.cb());
+flushRaf();
+check("自己受傷 → 仍會血紅閃光", byId.get("fxBlood").classList.contains("is-hot"));
+check("自己受傷 → 仍會震動", document.body.classList.contains("is-shaking"));
+
+// ------------------------------------------------------------ 板機手感
   const btn = byId.get("btnSelf");
   btn.fire("pointerdown", {});
   check("按下時加 is-armed（純視覺 class）", btn.classList.contains("is-armed"));

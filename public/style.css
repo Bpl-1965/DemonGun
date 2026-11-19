@@ -1614,6 +1614,19 @@ body::after {
   color: var(--ink);
 }
 
+/* 別人受傷：只有該座位縮一下（全螢幕紅光只留給自己受傷） */
+.foe.is-hurt {
+  animation: foeHurt 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes foeHurt {
+  0% { transform: translate3d(0, 0, 0) scale(1); filter: brightness(1); }
+  18% { transform: translate3d(-4px, 2px, 0) scale(1.04); filter: brightness(1.9) saturate(1.6); }
+  45% { transform: translate3d(3px, -1px, 0) scale(0.98); filter: brightness(1.2); }
+  70% { transform: translate3d(-2px, 1px, 0) scale(1.01); filter: brightness(1); }
+  100% { transform: translate3d(0, 0, 0) scale(1); filter: brightness(1); }
+}
+
 /* ------------------------------------------------------------------ ⛓️ 手銬狀態 */
 /* 被上銬的座位：金屬鎖鏈邊框 + 紅色警示徽章 */
 .foe.is-cuffed,

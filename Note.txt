@@ -335,3 +335,20 @@ Senior Software Developer.
      - ui_smoke 新增測試：伺服器送出 11 件時只渲染 8 格。
 - 驗證：check_frontend 68 個 id ✅、ui_smoke 60/0 ✅、fx_smoke 29/0 ✅、
   道具上限 5/8/8/8 ✅、AI 對局 3 次全部正常結束 ✅。
+
+- 修「別人受傷時自己也紅屏」：
+  1. public/fx.js 的 hit() 原本不分敵我，任何人的血量下降都會觸發
+     bodyShake() + bloodFlash() + muzzleFlash()（全螢幕震動 + 血紅閃光 + 槍口火光）。
+     改成只有 who === "me"（自己受傷）才播全螢幕效果；
+     別人受傷只讓該座位卡片播 .is-hurt 縮放動畫。
+  2. public/client.js 的 SHOT 分支也有同樣問題：
+     `if (action.realShell) shakeScreen()` 讓任何人打出實彈都震動整個畫面。
+     改成 `mine = shooterId === youId || targetId === youId` 才震動。
+  3. showHit() 原本對敵人受傷也會把 hint 改成「-N HP」蓋掉「誰對誰開槍」，
+     改成只有自己受傷才改 hint。
+  4. style.css 新增 .foe.is-hurt / @keyframes foeHurt（只動 transform / filter）。
+- 驗證（真實瀏覽器 CDP）：
+  對手掉血 → bodyShaking=false、bloodHot=false、muzzleFire=false、foeHurt=true ✅
+  自己掉血 → bodyShaking=true、bloodHot=true、myHurt=true ✅
+  fx_smoke 新增 5 項（對手受傷不紅屏、自己受傷仍紅屏）；
+  check_frontend 68 個 id ✅、ui_smoke 60/0 ✅、fx_smoke 34/0 ✅。

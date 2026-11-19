@@ -839,10 +839,12 @@
   function showHit(id, damage) {
     if (id === state.youId) {
       pulseHearts($("myHearts"));
+      // 只有自己受傷才用 hint 提醒血量
+      if (damage > 0) $("hint").textContent = "-" + damage + " HP";
     } else {
       pulseHearts(document.querySelector('[data-hearts="' + id + '"]'));
+      // 別人受傷：保留原本「誰對誰開槍」的紀錄，不要被 -N HP 蓋掉
     }
-    if (damage > 0) $("hint").textContent = "-" + damage + " HP";
   }
 
   /** 🍺 啤酒退彈：全房可見的退殼展示（1.8 秒後淡出） */
@@ -946,7 +948,10 @@
         $("hint").textContent = report;
         flashGun(action.realShell ? "live" : "blank");
         recoil();
-        if (action.realShell) shakeScreen();
+        // 只有「自己打」或「自己被打」才震動整個畫面；
+        // 別人互打只在旁邊跑動畫，不然畫面會一直晃。
+        const mine = action.shooterId === state.youId || action.targetId === state.youId;
+        if (action.realShell && mine) shakeScreen();
         if (action.damage > 0) showHit(action.targetId, action.damage);
         break;
       }

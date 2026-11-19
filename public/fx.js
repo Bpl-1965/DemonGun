@@ -90,17 +90,34 @@
     }
   }
 
-  /** 被實彈打中：震動 + 血紅閃光 + 槍口火光 */
+  /**
+   * 有人被實彈打中。
+   *
+   * ⚠ 只有「自己」被打中才播全螢幕的紅色閃光與震動（那是玩家受傷的回饋）；
+   *   敵人 / 其他人受傷時只做該座位卡片的心跳脈動，
+   *   否則畫面上會一直紅一片，看起來像自己一直被打。
+   */
   function hit(damage, who) {
     if (reduceMotion()) return;
-    bodyShake();
-    bloodFlash();
-    muzzleFlash();
-    if (who) {
+    // watchHearts() 一律用 "me" 當自己的 key，其他都是對手
+    const isMe = who === "me";
+    if (isMe) {
+      bodyShake();
+      bloodFlash();
+      muzzleFlash();
       const me = $("me");
-      if (me && who === "me") {
+      if (me) {
         me.classList.add("is-hit");
         setTimeout(() => me.classList.remove("is-hit"), 500);
+      }
+      return;
+    }
+    // 別人受傷：只讓那個座位縮一下，不動整個畫面
+    if (who) {
+      const card = document.querySelector('.foe[data-id="' + who + '"]');
+      if (card) {
+        card.classList.add("is-hurt");
+        setTimeout(() => card.classList.remove("is-hurt"), 520);
       }
     }
   }
